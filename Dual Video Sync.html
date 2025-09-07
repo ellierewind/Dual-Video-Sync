@@ -1,0 +1,1027 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dual Video Player with Sync</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #000;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+        }
+
+        .main-player-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            background: #000;
+        }
+
+        .video-player {
+            position: relative;
+            width: 100%;
+            height: 100%;
+        }
+
+        .video-element {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            background: #000;
+        }
+
+        .controls {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: linear-gradient(transparent, rgba(0,0,0,0.8));
+            padding: 20px;
+            transform: translateY(100%);
+            transition: transform 0.3s ease;
+        }
+
+        .video-player:hover .controls {
+            transform: translateY(0);
+        }
+
+        .progress-container {
+            width: 100%;
+            height: 6px;
+            background: rgba(255,255,255,0.3);
+            border-radius: 3px;
+            margin-bottom: 15px;
+            cursor: pointer;
+            position: relative;
+        }
+
+        .progress-bar {
+            height: 100%;
+            background: #ff0000;
+            border-radius: 3px;
+            width: 0%;
+            position: relative;
+        }
+
+        .progress-handle {
+            position: absolute;
+            right: -6px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 12px;
+            height: 12px;
+            background: #ff0000;
+            border-radius: 50%;
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+
+        .progress-container:hover .progress-handle {
+            opacity: 1;
+        }
+
+        .control-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            color: white;
+        }
+
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .control-btn {
+            background: none;
+            border: none;
+            color: white;
+            font-size: 18px;
+            cursor: pointer;
+            padding: 8px;
+            border-radius: 4px;
+            transition: background 0.2s;
+        }
+
+        .control-btn:hover {
+            background: rgba(255,255,255,0.2);
+        }
+
+        .time-display {
+            font-size: 14px;
+            min-width: 80px;
+        }
+
+        .speed-select {
+            background: rgba(255,255,255,0.1);
+            border: 1px solid rgba(255,255,255,0.3);
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        .file-input {
+            display: none;
+        }
+
+        .file-label {
+            background: #ff0000;
+            color: white;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.2s;
+        }
+
+        .file-label:hover {
+            background: #cc0000;
+        }
+
+        /* Overlay Player */
+        .overlay-player {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            width: 400px;
+            height: 225px;
+            background: #000;
+            border: 2px solid #333;
+            border-radius: 8px;
+            overflow: hidden;
+            z-index: 1000;
+            resize: both;
+            min-width: 200px;
+            min-height: 112px;
+        }
+
+
+
+        .subtitle-display {
+            position: absolute;
+            bottom: 80px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 4px;
+            font-size: 16px;
+            font-weight: bold;
+            text-align: center;
+            max-width: 80%;
+            line-height: 1.4;
+            z-index: 100;
+            display: none;
+            text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.8);
+        }
+
+        .overlay-subtitle-display {
+            position: absolute;
+            bottom: 40px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+            text-align: center;
+            max-width: 90%;
+            line-height: 1.2;
+            z-index: 100;
+            display: none;
+            text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.8);
+        }
+
+        .dragging {
+            user-select: none;
+        }
+
+        .overlay-controls {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: rgba(0,0,0,0.8);
+            padding: 8px;
+            transform: translateY(100%);
+            transition: transform 0.3s ease;
+        }
+
+        .overlay-player:hover .overlay-controls {
+            transform: translateY(0);
+        }
+
+        /* Idle state: hide cursor and controls after inactivity */
+        body.idle {
+            cursor: none;
+        }
+        body.idle .controls,
+        body.idle .overlay-controls {
+            transform: translateY(100%) !important;
+        }
+        /* When not idle, show both control bars */
+        body:not(.idle) .controls,
+        body:not(.idle) .overlay-controls {
+            transform: translateY(0) !important;
+        }
+
+        .overlay-progress {
+            width: 100%;
+            height: 3px;
+            background: rgba(255,255,255,0.3);
+            border-radius: 2px;
+            margin-bottom: 8px;
+            cursor: pointer;
+        }
+
+        .overlay-progress-bar {
+            height: 100%;
+            background: #ff0000;
+            border-radius: 2px;
+            width: 0%;
+        }
+
+        .overlay-control-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            color: white;
+            font-size: 12px;
+        }
+
+        .overlay-btn {
+            background: none;
+            border: none;
+            color: white;
+            font-size: 14px;
+            cursor: pointer;
+            padding: 4px;
+        }
+
+        /* Sync Controls */
+        .sync-controls {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            background: rgba(0,0,0,0.8);
+            color: white;
+            padding: 15px;
+            border-radius: 8px;
+            z-index: 1001;
+        }
+
+        .sync-group {
+            margin-bottom: 10px;
+        }
+
+        .sync-label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 12px;
+        }
+
+        .sync-input {
+            width: 80px;
+            padding: 4px;
+            border: 1px solid #555;
+            background: #222;
+            color: white;
+            border-radius: 4px;
+        }
+
+        .sync-btn {
+            background: #ff0000;
+            color: white;
+            border: none;
+            padding: 8px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 5px;
+            font-size: 12px;
+        }
+
+        .sync-btn:hover {
+            background: #cc0000;
+        }
+
+        .volume-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .volume-slider {
+            width: 80px;
+            height: 4px;
+            background: rgba(255,255,255,0.3);
+            outline: none;
+            border-radius: 2px;
+            cursor: pointer;
+        }
+
+        .volume-slider::-webkit-slider-thumb {
+            appearance: none;
+            width: 12px;
+            height: 12px;
+            background: #ff0000;
+            border-radius: 50%;
+            cursor: pointer;
+        }
+
+        .volume-slider::-moz-range-thumb {
+            width: 12px;
+            height: 12px;
+            background: #ff0000;
+            border-radius: 50%;
+            cursor: pointer;
+            border: none;
+        }
+    </style>
+</head>
+<body>
+    <!-- Main Video Player -->
+    <div class="main-player-container">
+        <div class="video-player" id="mainPlayer">
+            <video class="video-element" id="video1">
+                <source src="" type="video/mp4">
+            </video>
+            <div class="subtitle-display" id="subtitle1Display"></div>
+            <div class="controls">
+                <div class="progress-container" id="progress1">
+                    <div class="progress-bar" id="progressBar1">
+                        <div class="progress-handle"></div>
+                    </div>
+                </div>
+                <div class="control-row">
+                    <div class="control-group">
+                        <button class="control-btn" id="playBtn1">▶</button>
+                        <div class="time-display" id="timeDisplay1">0:00 / 0:00</div>
+                        <select class="speed-select" id="speedSelect1">
+                            <option value="1">1x</option>
+                            <option value="1.25">1.25x</option>
+                            <option value="1.5">1.5x</option>
+                            <option value="1.75">1.75x</option>
+                            <option value="2">2x</option>
+                        </select>
+                        <div class="volume-container">
+                            <button class="control-btn" id="muteBtn1">🔊</button>
+                            <input type="range" class="volume-slider" id="volumeSlider1" min="0" max="1" step="0.1" value="1">
+                        </div>
+                        <button class="control-btn" id="subtitleBtn1" title="Toggle Subtitles">CC</button>
+                    </div>
+                    <div class="control-group">
+                        <button class="control-btn" id="swapBtn" title="Swap Videos">🔄</button>
+                        <label class="file-label" for="file1">Choose Video 1</label>
+                        <input type="file" id="file1" class="file-input" accept="video/*">
+                        <label class="file-label" for="subtitle1">SRT 1</label>
+                        <input type="file" id="subtitle1" class="file-input" accept=".srt">
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Overlay Video Player -->
+    <div class="overlay-player" id="overlayPlayer">
+        <video class="video-element" id="video2" style="width: 100%; height: 100%;">
+            <source src="" type="video/mp4">
+        </video>
+        <div class="overlay-subtitle-display" id="subtitle2Display"></div>
+        <div class="overlay-controls">
+            <div class="overlay-progress" id="progress2">
+                <div class="overlay-progress-bar" id="progressBar2"></div>
+            </div>
+            <div class="overlay-control-row">
+                <div class="control-group">
+                    <button class="overlay-btn" id="playBtn2">▶</button>
+                    <span class="time-display" id="timeDisplay2">0:00</span>
+                    <select class="speed-select" id="speedSelect2" style="font-size: 10px; padding: 2px 4px;">
+                        <option value="1">1x</option>
+                        <option value="1.25">1.25x</option>
+                        <option value="1.5">1.5x</option>
+                        <option value="1.75">1.75x</option>
+                        <option value="2">2x</option>
+                    </select>
+                    <div class="volume-container">
+                        <button class="overlay-btn" id="muteBtn2">🔊</button>
+                        <input type="range" class="volume-slider" id="volumeSlider2" min="0" max="1" step="0.1" value="1" style="width: 60px; height: 3px;">
+                    </div>
+                    <button class="overlay-btn" id="subtitleBtn2" title="Toggle Subtitles" style="font-size: 10px;">CC</button>
+                </div>
+                <div style="display: flex; gap: 5px;">
+                    <label class="file-label" for="file2" style="font-size: 10px; padding: 4px 8px;">Choose Video 2</label>
+                    <label class="file-label" for="subtitle2" style="font-size: 10px; padding: 4px 8px;">SRT 2</label>
+                </div>
+                <input type="file" id="file2" class="file-input" accept="video/*">
+                <input type="file" id="subtitle2" class="file-input" accept=".srt">
+            </div>
+        </div>
+    </div>
+
+    <!-- Sync Controls -->
+    <div class="sync-controls" id="syncControls">
+        <div class="sync-group">
+            <label class="sync-label">Video 2 Delay (seconds):</label>
+            <input type="number" class="sync-input" id="delayInput" value="0" step="0.1">
+        </div>
+        <div class="sync-group">
+            <button class="sync-btn" id="setSyncBtn">Set Sync Point</button>
+            <button class="sync-btn" id="clearSyncBtn">Clear Sync</button>
+        </div>
+        <div class="sync-group">
+            <small>Sync Status: <span id="syncStatus">Not synced</span></small>
+        </div>
+    </div>
+
+    <script>
+        // Global variables
+        let video1 = document.getElementById('video1');
+        let video2 = document.getElementById('video2');
+        let syncPoint1 = null;
+        let syncPoint2 = null;
+        let isSynced = false;
+        let delay = 0;
+        let isDragging = false;
+        let dragOffset = { x: 0, y: 0 };
+        let subtitles1 = [];
+        let subtitles2 = [];
+        let subtitlesEnabled1 = false;
+        let subtitlesEnabled2 = false;
+
+        // Initialize players
+        function initializePlayers() {
+            // File inputs
+            document.getElementById('file1').addEventListener('change', (e) => loadVideo(e, video1));
+            document.getElementById('file2').addEventListener('change', (e) => loadVideo(e, video2));
+            
+            // Subtitle inputs
+            document.getElementById('subtitle1').addEventListener('change', (e) => loadSubtitle(e, 1));
+            document.getElementById('subtitle2').addEventListener('change', (e) => loadSubtitle(e, 2));
+            
+            // Subtitle toggle buttons
+            document.getElementById('subtitleBtn1').addEventListener('click', () => toggleSubtitles(1));
+            document.getElementById('subtitleBtn2').addEventListener('click', () => toggleSubtitles(2));
+
+            // Play/pause buttons
+            document.getElementById('playBtn1').addEventListener('click', () => togglePlay(video1, 'playBtn1'));
+            document.getElementById('playBtn2').addEventListener('click', () => togglePlay(video2, 'playBtn2'));
+
+            // Progress bars
+            document.getElementById('progress1').addEventListener('click', (e) => seekVideo(e, video1, 'progress1'));
+            document.getElementById('progress2').addEventListener('click', (e) => seekVideo(e, video2, 'progress2'));
+
+            // Speed controls
+            document.getElementById('speedSelect1').addEventListener('change', (e) => changeSpeed(video1, e.target.value));
+            document.getElementById('speedSelect2').addEventListener('change', (e) => changeSpeed(video2, e.target.value));
+
+            // Volume controls
+            document.getElementById('volumeSlider1').addEventListener('input', (e) => changeVolume(video1, e.target.value, 'muteBtn1'));
+            document.getElementById('volumeSlider2').addEventListener('input', (e) => changeVolume(video2, e.target.value, 'muteBtn2'));
+            document.getElementById('muteBtn1').addEventListener('click', () => toggleMute(video1, 'muteBtn1', 'volumeSlider1'));
+            document.getElementById('muteBtn2').addEventListener('click', () => toggleMute(video2, 'muteBtn2', 'volumeSlider2'));
+
+            // Swap button
+            document.getElementById('swapBtn').addEventListener('click', swapVideos);
+
+            // Sync controls
+            document.getElementById('setSyncBtn').addEventListener('click', setSyncPoint);
+            document.getElementById('clearSyncBtn').addEventListener('click', clearSync);
+            document.getElementById('delayInput').addEventListener('change', updateDelay);
+
+            // Video events
+            video1.addEventListener('timeupdate', () => {
+                updateProgress(video1, 'progressBar1', 'timeDisplay1');
+                updateSubtitles(1, video1.currentTime);
+            });
+            video2.addEventListener('timeupdate', () => {
+                updateProgress(video2, 'progressBar2', 'timeDisplay2');
+                updateSubtitles(2, video2.currentTime);
+            });
+            video1.addEventListener('timeupdate', handleSync);
+
+            // Keyboard controls
+            document.addEventListener('keydown', handleKeyboard);
+
+            // Dragging functionality
+            initializeDragging();
+
+            // Inactivity handling (hide controls and cursor)
+            setupInactivityHide();
+        }
+
+        // Hide controls and cursor after 1s of no mouse movement
+        function setupInactivityHide() {
+            const IDLE_MS = 1000;
+            let inactivityTimer = null;
+
+            const root = document.body;
+
+            const showControls = () => {
+                root.classList.remove('idle');
+            };
+
+            const hideControls = () => {
+                root.classList.add('idle');
+            };
+
+            const resetTimer = () => {
+                showControls();
+                if (inactivityTimer) clearTimeout(inactivityTimer);
+                inactivityTimer = setTimeout(hideControls, IDLE_MS);
+            };
+
+            // Mouse/pointer movement resets the timer
+            document.addEventListener('mousemove', resetTimer, { passive: true });
+            document.addEventListener('pointermove', resetTimer, { passive: true });
+            document.addEventListener('mousedown', resetTimer, { passive: true });
+            document.addEventListener('touchstart', resetTimer, { passive: true });
+            document.addEventListener('touchmove', resetTimer, { passive: true });
+
+            // Start in non-idle state, then schedule initial hide
+            resetTimer();
+        }
+
+        function loadVideo(event, video) {
+            const file = event.target.files[0];
+            if (file) {
+                const url = URL.createObjectURL(file);
+                video.src = url;
+                video.load();
+            }
+        }
+
+        function togglePlay(video, btnId) {
+            const btn = document.getElementById(btnId);
+            if (video.paused) {
+                video.play();
+                btn.textContent = '⏸';
+            } else {
+                video.pause();
+                btn.textContent = '▶';
+            }
+            
+            // Sync play/pause if synced (works for both players)
+            if (isSynced) {
+                if (video === video1) {
+                    if (video.paused) {
+                        video2.pause();
+                        document.getElementById('playBtn2').textContent = '▶';
+                    } else {
+                        video2.play();
+                        document.getElementById('playBtn2').textContent = '⏸';
+                    }
+                } else if (video === video2) {
+                    if (video.paused) {
+                        video1.pause();
+                        document.getElementById('playBtn1').textContent = '▶';
+                    } else {
+                        video1.play();
+                        document.getElementById('playBtn1').textContent = '⏸';
+                    }
+                }
+            }
+        }
+
+        function seekVideo(event, video, progressId) {
+            const progressContainer = document.getElementById(progressId);
+            const rect = progressContainer.getBoundingClientRect();
+            const clickX = event.clientX - rect.left;
+            const percentage = clickX / rect.width;
+            const newTime = percentage * video.duration;
+            
+            video.currentTime = newTime;
+            
+            // Sync seeking if synced - but be more precise about timing
+            if (isSynced && video === video1) {
+                const syncedTime = newTime - syncPoint1 + syncPoint2 + delay;
+                if (syncedTime >= 0 && syncedTime <= video2.duration) {
+                    video2.currentTime = syncedTime;
+                    lastSyncTime = Date.now(); // Update last sync time to prevent immediate re-sync
+                }
+            }
+        }
+
+        function changeSpeed(video, speed) {
+            video.playbackRate = parseFloat(speed);
+            
+            // Sync speed if synced
+            if (isSynced && video === video1) {
+                video2.playbackRate = parseFloat(speed);
+                document.getElementById('speedSelect2').value = speed;
+            }
+        }
+
+        function updateProgress(video, progressBarId, timeDisplayId) {
+            const progressBar = document.getElementById(progressBarId);
+            const timeDisplay = document.getElementById(timeDisplayId);
+            
+            if (video.duration) {
+                const percentage = (video.currentTime / video.duration) * 100;
+                progressBar.style.width = percentage + '%';
+                
+                const current = formatTime(video.currentTime);
+                const total = formatTime(video.duration);
+                timeDisplay.textContent = timeDisplayId.includes('2') ? current : `${current} / ${total}`;
+            }
+        }
+
+        function formatTime(seconds) {
+            const hours = Math.floor(seconds / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            const secs = Math.floor(seconds % 60);
+            
+            return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+        }
+
+        function loadSubtitle(event, playerNum) {
+            const file = event.target.files[0];
+            if (file && file.name.endsWith('.srt')) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    const srtContent = e.target.result;
+                    const parsedSubtitles = parseSRT(srtContent);
+                    
+                    if (playerNum === 1) {
+                        subtitles1 = parsedSubtitles;
+                    } else {
+                        subtitles2 = parsedSubtitles;
+                    }
+                };
+                reader.readAsText(file);
+            }
+        }
+
+        function parseSRT(srtContent) {
+            const subtitles = [];
+            const blocks = srtContent.trim().split(/\n\s*\n/);
+            
+            blocks.forEach(block => {
+                const lines = block.trim().split('\n');
+                if (lines.length >= 3) {
+                    // Skip the sequence number (first line)
+                    const timeString = lines[1];
+                    // Get all lines after the timestamp as subtitle text
+                    const text = lines.slice(2).join('\n').trim();
+                    
+                    // Parse time format: 00:00:20,000 --> 00:00:24,400
+                    const timeMatch = timeString.match(/(\d{2}):(\d{2}):(\d{2}),(\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2}),(\d{3})/);
+                    
+                    if (timeMatch && text) {
+                        const startTime = parseInt(timeMatch[1]) * 3600 + 
+                                         parseInt(timeMatch[2]) * 60 + 
+                                         parseInt(timeMatch[3]) + 
+                                         parseInt(timeMatch[4]) / 1000;
+                        
+                        const endTime = parseInt(timeMatch[5]) * 3600 + 
+                                       parseInt(timeMatch[6]) * 60 + 
+                                       parseInt(timeMatch[7]) + 
+                                       parseInt(timeMatch[8]) / 1000;
+                        
+                        subtitles.push({
+                            start: startTime,
+                            end: endTime,
+                            text: text
+                        });
+                    }
+                }
+            });
+            
+            return subtitles;
+        }
+
+        function toggleSubtitles(playerNum) {
+            if (playerNum === 1) {
+                subtitlesEnabled1 = !subtitlesEnabled1;
+                const btn = document.getElementById('subtitleBtn1');
+                const display = document.getElementById('subtitle1Display');
+                
+                btn.style.background = subtitlesEnabled1 ? 'rgba(255,255,255,0.3)' : 'none';
+                if (!subtitlesEnabled1) {
+                    display.style.display = 'none';
+                }
+            } else {
+                subtitlesEnabled2 = !subtitlesEnabled2;
+                const btn = document.getElementById('subtitleBtn2');
+                const display = document.getElementById('subtitle2Display');
+                
+                btn.style.background = subtitlesEnabled2 ? 'rgba(255,255,255,0.3)' : 'none';
+                if (!subtitlesEnabled2) {
+                    display.style.display = 'none';
+                }
+            }
+        }
+
+        function updateSubtitles(playerNum, currentTime) {
+            const subtitles = playerNum === 1 ? subtitles1 : subtitles2;
+            const enabled = playerNum === 1 ? subtitlesEnabled1 : subtitlesEnabled2;
+            const displayId = playerNum === 1 ? 'subtitle1Display' : 'subtitle2Display';
+            const display = document.getElementById(displayId);
+            
+            if (!enabled || subtitles.length === 0) {
+                display.style.display = 'none';
+                return;
+            }
+            
+            // Find current subtitle
+            const currentSubtitle = subtitles.find(subtitle => 
+                currentTime >= subtitle.start && currentTime <= subtitle.end
+            );
+            
+            if (currentSubtitle) {
+                display.textContent = currentSubtitle.text;
+                display.style.display = 'block';
+            } else {
+                display.style.display = 'none';
+            }
+        }
+
+        function swapVideos() {
+            // Store current states
+            const video1Src = video1.src;
+            const video2Src = video2.src;
+            const video1CurrentTime = video1.currentTime;
+            const video2CurrentTime = video2.currentTime;
+            const video1Volume = video1.volume;
+            const video2Volume = video2.volume;
+            const video1Muted = video1.muted;
+            const video2Muted = video2.muted;
+            const video1PlaybackRate = video1.playbackRate;
+            const video2PlaybackRate = video2.playbackRate;
+            const video1Paused = video1.paused;
+            const video2Paused = video2.paused;
+            
+            // Store subtitle states
+            const tempSubtitles1 = [...subtitles1];
+            const tempSubtitles2 = [...subtitles2];
+            const tempSubtitlesEnabled1 = subtitlesEnabled1;
+            const tempSubtitlesEnabled2 = subtitlesEnabled2;
+            
+            // Store sync points if they exist
+            const tempSyncPoint1 = syncPoint1;
+            const tempSyncPoint2 = syncPoint2;
+            const wasSynced = isSynced;
+            
+            // Swap video sources
+            video1.src = video2Src;
+            video2.src = video1Src;
+            
+            // Wait for videos to load then restore states
+            Promise.all([
+                new Promise(resolve => {
+                    if (video1Src) {
+                        video1.addEventListener('loadeddata', resolve, { once: true });
+                    } else {
+                        resolve();
+                    }
+                }),
+                new Promise(resolve => {
+                    if (video2Src) {
+                        video2.addEventListener('loadeddata', resolve, { once: true });
+                    } else {
+                        resolve();
+                    }
+                })
+            ]).then(() => {
+                // Restore states with swapped values
+                if (video2Src) video1.currentTime = video2CurrentTime;
+                if (video1Src) video2.currentTime = video1CurrentTime;
+                
+                video1.volume = video2Volume;
+                video2.volume = video1Volume;
+                video1.muted = video2Muted;
+                video2.muted = video1Muted;
+                video1.playbackRate = video2PlaybackRate;
+                video2.playbackRate = video1PlaybackRate;
+                
+                // Update UI controls
+                document.getElementById('volumeSlider1').value = video2Volume;
+                document.getElementById('volumeSlider2').value = video1Volume;
+                document.getElementById('speedSelect1').value = video2PlaybackRate;
+                document.getElementById('speedSelect2').value = video1PlaybackRate;
+                
+                // Update volume button icons
+                changeVolume(video1, video1.volume, 'muteBtn1');
+                changeVolume(video2, video2.volume, 'muteBtn2');
+                
+                // Swap subtitles
+                subtitles1 = tempSubtitles2;
+                subtitles2 = tempSubtitles1;
+                subtitlesEnabled1 = tempSubtitlesEnabled2;
+                subtitlesEnabled2 = tempSubtitlesEnabled1;
+                
+                // Update subtitle button states
+                document.getElementById('subtitleBtn1').style.background = subtitlesEnabled1 ? 'rgba(255,255,255,0.3)' : 'none';
+                document.getElementById('subtitleBtn2').style.background = subtitlesEnabled2 ? 'rgba(255,255,255,0.3)' : 'none';
+                
+                // Restore sync points with swapped values
+                if (wasSynced) {
+                    syncPoint1 = tempSyncPoint2; // Swap sync points
+                    syncPoint2 = tempSyncPoint1;
+                    isSynced = true;
+                    
+                    document.getElementById('syncStatus').textContent = 
+                        `Synced at ${formatTime(syncPoint1)} / ${formatTime(syncPoint2)}`;
+                }
+                
+                // Restore play states
+                if (!video2Paused && video1Src) {
+                    video1.play();
+                    document.getElementById('playBtn1').textContent = '⏸';
+                } else {
+                    document.getElementById('playBtn1').textContent = '▶';
+                }
+                
+                if (!video1Paused && video2Src) {
+                    video2.play();
+                    document.getElementById('playBtn2').textContent = '⏸';
+                } else {
+                    document.getElementById('playBtn2').textContent = '▶';
+                }
+            });
+        }
+
+        function changeVolume(video, volume, muteBtnId) {
+            video.volume = volume;
+            const muteBtn = document.getElementById(muteBtnId);
+            if (volume == 0) {
+                muteBtn.textContent = '🔇';
+            } else if (volume < 0.5) {
+                muteBtn.textContent = '🔉';
+            } else {
+                muteBtn.textContent = '🔊';
+            }
+        }
+
+        function toggleMute(video, muteBtnId, sliderId) {
+            const muteBtn = document.getElementById(muteBtnId);
+            const slider = document.getElementById(sliderId);
+            
+            if (video.muted) {
+                video.muted = false;
+                video.volume = slider.value;
+                changeVolume(video, slider.value, muteBtnId);
+            } else {
+                video.muted = true;
+                muteBtn.textContent = '🔇';
+            }
+        }
+
+        function setSyncPoint() {
+            if (video1.duration && video2.duration) {
+                syncPoint1 = video1.currentTime;
+                syncPoint2 = video2.currentTime;
+                isSynced = true;
+                
+                // Start video2 from its sync point when video1 plays
+                video2.currentTime = syncPoint2;
+                
+                document.getElementById('syncStatus').textContent = 
+                    `Synced at ${formatTime(syncPoint1)} / ${formatTime(syncPoint2)}`;
+                
+                // Hide sync controls after setting sync point
+                document.getElementById('syncControls').style.display = 'none';
+            }
+        }
+
+        function clearSync() {
+            syncPoint1 = null;
+            syncPoint2 = null;
+            isSynced = false;
+            document.getElementById('syncStatus').textContent = 'Not synced';
+            
+            // Show sync controls again when clearing sync
+            document.getElementById('syncControls').style.display = 'block';
+        }
+
+        function updateDelay() {
+            delay = parseFloat(document.getElementById('delayInput').value);
+        }
+
+        let lastSyncTime = 0;
+        const SYNC_THRESHOLD = 0.5; // Only sync if difference is more than 0.5 seconds
+        const SYNC_INTERVAL = 100; // Minimum time between sync adjustments (ms)
+
+        function handleSync() {
+            if (isSynced && !video1.paused) {
+                const now = Date.now();
+                const targetTime = (video1.currentTime - syncPoint1) + syncPoint2 + delay;
+                const timeDifference = Math.abs(video2.currentTime - targetTime);
+                
+                // Only sync if there's a significant difference and enough time has passed
+                if (targetTime >= 0 && 
+                    timeDifference > SYNC_THRESHOLD && 
+                    now - lastSyncTime > SYNC_INTERVAL) {
+                    
+                    video2.currentTime = targetTime;
+                    lastSyncTime = now;
+                }
+            }
+        }
+
+        function handleKeyboard(event) {
+            if (event.target.tagName === 'INPUT') return;
+            
+            switch(event.key) {
+                case 'ArrowLeft':
+                    event.preventDefault();
+                    skipTime(-5);
+                    break;
+                case 'ArrowRight':
+                    event.preventDefault();
+                    skipTime(5);
+                    break;
+                case ' ':
+                    event.preventDefault();
+                    togglePlay(video1, 'playBtn1');
+                    break;
+            }
+        }
+
+        function skipTime(seconds) {
+            const newTime = Math.max(0, Math.min(video1.duration, video1.currentTime + seconds));
+            video1.currentTime = newTime;
+            
+            if (isSynced) {
+                const syncedTime = newTime - syncPoint1 + syncPoint2 + delay;
+                if (syncedTime >= 0 && syncedTime <= video2.duration) {
+                    video2.currentTime = syncedTime;
+                    lastSyncTime = Date.now(); // Update last sync time to prevent immediate re-sync
+                }
+            }
+        }
+
+        function initializeDragging() {
+            const overlay = document.getElementById('overlayPlayer');
+
+            overlay.addEventListener('mousedown', startDrag);
+
+            function startDrag(e) {
+                // Don't start drag if clicking on controls or resize handle
+                if (e.target.closest('.overlay-controls')) return;
+                
+                // Check if clicking near the resize handle (bottom-right corner)
+                const rect = overlay.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+                const isNearResizeHandle = x > rect.width - 20 && y > rect.height - 20;
+                
+                if (isNearResizeHandle) return;
+                
+                isDragging = true;
+                dragOffset.x = e.clientX - rect.left;
+                dragOffset.y = e.clientY - rect.top;
+                
+                document.addEventListener('mousemove', drag);
+                document.addEventListener('mouseup', stopDrag);
+                document.body.classList.add('dragging');
+                
+                // Temporarily disable resize while dragging
+                overlay.style.resize = 'none';
+            }
+
+            function drag(e) {
+                if (!isDragging) return;
+                
+                const x = e.clientX - dragOffset.x;
+                const y = e.clientY - dragOffset.y;
+                
+                overlay.style.left = Math.max(0, Math.min(window.innerWidth - overlay.offsetWidth, x)) + 'px';
+                overlay.style.top = Math.max(0, Math.min(window.innerHeight - overlay.offsetHeight, y)) + 'px';
+                overlay.style.right = 'auto';
+            }
+
+            function stopDrag() {
+                if (isDragging) {
+                    isDragging = false;
+                    document.removeEventListener('mousemove', drag);
+                    document.removeEventListener('mouseup', stopDrag);
+                    document.body.classList.remove('dragging');
+                    
+                    // Re-enable resize after dragging
+                    overlay.style.resize = 'both';
+                }
+            }
+        }
+
+        function toggleOverlay() {
+            const overlay = document.getElementById('overlayPlayer');
+            overlay.style.display = overlay.style.display === 'none' ? 'block' : 'none';
+        }
+
+        // Initialize everything when page loads
+        document.addEventListener('DOMContentLoaded', initializePlayers);
+    </script>
+</body>
+</html>
