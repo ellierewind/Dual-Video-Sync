@@ -159,10 +159,26 @@
             border-radius: 8px;
             overflow: hidden;
             z-index: 1000;
-            resize: both;
+            /* Use custom corner handles instead of native resizer */
+            resize: none;
             min-width: 200px;
             min-height: 112px;
         }
+
+        /* Custom corner resize handles */
+        .resize-handle {
+            position: absolute;
+            width: 12px;
+            height: 12px;
+            background: transparent; /* invisible handle */
+            border: none;            /* remove visible border */
+            border-radius: 2px;
+            z-index: 1002;
+        }
+        .resize-handle.nw { top: -1px; left: -1px; cursor: nwse-resize; }
+        .resize-handle.ne { top: -1px; right: -1px; cursor: nesw-resize; }
+        .resize-handle.sw { bottom: -1px; left: -1px; cursor: nesw-resize; }
+        .resize-handle.se { bottom: -1px; right: -1px; cursor: nwse-resize; }
 
 
 
@@ -428,6 +444,11 @@
                 <input type="file" id="subtitle2" class="file-input" accept=".srt">
             </div>
         </div>
+        <!-- Corner resize handles -->
+        <div class="resize-handle nw" data-handle="nw"></div>
+        <div class="resize-handle ne" data-handle="ne"></div>
+        <div class="resize-handle sw" data-handle="sw"></div>
+        <div class="resize-handle se" data-handle="se"></div>
     </div>
 
     <!-- Sync Controls -->
@@ -455,6 +476,8 @@
         let delay = 0;
         let isDragging = false;
         let dragOffset = { x: 0, y: 0 };
+        let isResizing = false;
+        let resizeState = { startX: 0, startY: 0, startW: 0, startH: 0, startLeft: 0, startTop: 0, handle: '' };
         let subtitles1 = [];
         let subtitles2 = [];
         let subtitlesEnabled1 = false;
@@ -523,7 +546,7 @@
 
         // Hide controls and cursor after 1s of no mouse movement
         function setupInactivityHide() {
-            const IDLE_MS = 1000;
+            const IDLE_MS = 300;
             let inactivityTimer = null;
 
             const root = document.body;
@@ -966,10 +989,14 @@
             const overlay = document.getElementById('overlayPlayer');
 
             overlay.addEventListener('mousedown', startDrag);
+            // Corner resize handles
+            overlay.querySelectorAll('.resize-handle').forEach(h => {
+                h.addEventListener('mousedown', startResize);
+            });
 
             function startDrag(e) {
                 // Don't start drag if clicking on controls or resize handle
-                if (e.target.closest('.overlay-controls')) return;
+                if (e.target.closest('.overlay-controls') || e.target.closest('.resize-handle')) return;
                 
                 // Check if clicking near the resize handle (bottom-right corner)
                 const rect = overlay.getBoundingClientRect();
@@ -1010,8 +1037,93 @@
                     document.body.classList.remove('dragging');
                     
                     // Re-enable resize after dragging
-                    overlay.style.resize = 'both';
+                    overlay.style.resize = 'none';
                 }
+            }
+
+            function startResize(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                const rect = overlay.getBoundingClientRect();
+                isResizing = true;
+                resizeState.startX = e.clientX;
+                resizeState.startY = e.clientY;
+                resizeState.startW = rect.width;
+                resizeState.startH = rect.height;
+                resizeState.startLeft = rect.left;
+                resizeState.startTop = rect.top;
+                resizeState.handle = e.target.getAttribute('data-handle');
+
+                document.addEventListener('mousemove', doResize);
+                document.addEventListener('mouseup', stopResize);
+                document.body.classList.add('dragging');
+            }
+
+            function doResize(e) {
+                if (!isResizing) return;
+                const dx = e.clientX - resizeState.startX;
+                const dy = e.clientY - resizeState.startY;
+
+                // Compute new geometry based on handle
+                let newW = resizeState.startW;
+                let newH = resizeState.startH;
+                let newLeft = resizeState.startLeft;
+                let newTop = resizeState.startTop;
+
+                const handle = resizeState.handle;
+                if (handle === 'se') {
+                    newW = resizeState.startW + dx;
+                    newH = resizeState.startH + dy;
+                } else if (handle === 'sw') {
+                    newW = resizeState.startW - dx;
+                    newH = resizeState.startH + dy;
+                    newLeft = resizeState.startLeft + dx;
+                } else if (handle === 'ne') {
+                    newW = resizeState.startW + dx;
+                    newH = resizeState.startH - dy;
+                    newTop = resizeState.startTop + dy;
+                } else if (handle === 'nw') {
+                    newW = resizeState.startW - dx;
+                    newH = resizeState.startH - dy;
+                    newLeft = resizeState.startLeft + dx;
+                    newTop = resizeState.startTop + dy;
+                }
+
+                // Enforce minimums
+                const cs = window.getComputedStyle(overlay);
+                const minW = parseFloat(cs.minWidth) || 200;
+                const minH = parseFloat(cs.minHeight) || 112;
+
+                if (newW < minW) {
+                    if (handle === 'sw' || handle === 'nw') {
+                        newLeft += (newW - minW);
+                    }
+                    newW = minW;
+                }
+                if (newH < minH) {
+                    if (handle === 'nw' || handle === 'ne') {
+                        newTop += (newH - minH);
+                    }
+                    newH = minH;
+                }
+
+                // Keep within viewport (optional soft clamp)
+                newLeft = Math.max(0, Math.min(newLeft, window.innerWidth - newW));
+                newTop = Math.max(0, Math.min(newTop, window.innerHeight - newH));
+
+                overlay.style.width = newW + 'px';
+                overlay.style.height = newH + 'px';
+                overlay.style.left = newLeft + 'px';
+                overlay.style.top = newTop + 'px';
+                overlay.style.right = 'auto';
+            }
+
+            function stopResize() {
+                if (!isResizing) return;
+                isResizing = false;
+                document.removeEventListener('mousemove', doResize);
+                document.removeEventListener('mouseup', stopResize);
+                document.body.classList.remove('dragging');
             }
         }
 
