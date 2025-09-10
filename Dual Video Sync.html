@@ -121,12 +121,21 @@
         }
 
         .speed-select {
-            background: rgba(255,255,255,0.1);
+            background: rgba(0,0,0,0.6);
             border: 1px solid rgba(255,255,255,0.3);
-            color: white;
+            color: #fff;
             padding: 4px 8px;
             border-radius: 4px;
             cursor: pointer;
+            appearance: none;
+            -webkit-appearance: none;
+            -moz-appearance: none;
+        }
+
+        /* Ensure dropdown list items stay readable on white menus */
+        .speed-select option {
+            color: #000;
+            background: #fff;
         }
 
         .file-input {
