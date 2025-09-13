@@ -536,6 +536,37 @@
             border: 1px solid rgba(255,255,255,0.18);
         }
         .sync-btn:hover { filter: brightness(1.03); }
+
+        /* Dropdown menus for CC/SRT */
+        .dropdown { position: relative; }
+        .dropdown-toggle { line-height: 1; }
+        .dropdown-menu {
+            position: absolute;
+            bottom: 100%;
+            right: 0;
+            background: var(--panel-bg);
+            border: 1px solid var(--panel-stroke);
+            border-radius: 10px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.4);
+            padding: 6px;
+            display: none;
+            min-width: 150px;
+            z-index: 1100;
+        }
+        .dropdown.open > .dropdown-menu { display: block; }
+        .dropdown-item {
+            display: block;
+            width: 100%;
+            text-align: left;
+            color: var(--text);
+            background: transparent;
+            border: 1px solid transparent;
+            border-radius: 8px;
+            padding: 6px 10px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        .dropdown-item:hover { background: rgba(255,255,255,0.10); border-color: rgba(255,255,255,0.16); }
     </style>
 </head>
 <body>
@@ -567,14 +598,21 @@
                             <button class="control-btn" id="muteBtn1">🔊</button>
                             <input type="range" class="volume-slider" id="volumeSlider1" min="0" max="1" step="0.1" value="1">
                         </div>
-                        <button class="control-btn" id="subtitleBtn1" title="Toggle Subtitles">CC</button>
+                        <button class="control-btn" id="fsBtn1" title="Toggle Fullscreen">⛶</button>
+                        
                     </div>
                     <div class="control-group">
                         <button class="control-btn" id="swapBtn" title="Swap Videos">🔄</button>
                         <label class="file-label" for="file1">Choose Video 1</label>
                         <input type="file" id="file1" class="file-input">
-                        <label class="file-label" for="subtitle1">SRT 1</label>
                         <input type="file" id="subtitle1" class="file-input" accept=".srt">
+                        <div class="dropdown" id="settings1">
+                            <button class="control-btn dropdown-toggle" id="settingsToggle1" title="More options">⋯</button>
+                            <div class="dropdown-menu">
+                                <label class="dropdown-item" for="subtitle1">Load SRT 1</label>
+                        </div>
+                        </div>
+                        <button class="control-btn" id="fsBtnMain" title="Toggle Fullscreen">⛶</button>
                     </div>
                 </div>
             </div>
@@ -606,11 +644,18 @@
                         <button class="overlay-btn" id="muteBtn2">🔊</button>
                         <input type="range" class="volume-slider" id="volumeSlider2" min="0" max="1" step="0.1" value="1" style="width: 60px; height: 3px;">
                     </div>
-                    <button class="overlay-btn" id="subtitleBtn2" title="Toggle Subtitles" style="font-size: 10px;">CC</button>
+                    <button class="overlay-btn" id="fsBtn2" title="Toggle Fullscreen" style="font-size: 10px;">⛶</button>
+                    
                 </div>
-                <div style="display: flex; gap: 5px;">
+                <div style="display: flex; gap: 5px; align-items: center;">
+                    <button class="overlay-btn" id="swapBtn2" title="Swap Videos">🔄</button>
                     <label class="file-label" for="file2" style="font-size: 10px; padding: 4px 8px;">Choose Video 2</label>
-                    <label class="file-label" for="subtitle2" style="font-size: 10px; padding: 4px 8px;">SRT 2</label>
+                    <div class="dropdown" id="settings2">
+                        <button class="overlay-btn dropdown-toggle" id="settingsToggle2" title="More options">⋯</button>
+                        <div class="dropdown-menu">
+                            <label class="dropdown-item" for="subtitle2">Load SRT 2</label>
+                        </div>
+                    </div>
                 </div>
                 <input type="file" id="file2" class="file-input">
                 <input type="file" id="subtitle2" class="file-input" accept=".srt">
@@ -645,8 +690,8 @@
         let resizeState = { startX: 0, startY: 0, startW: 0, startH: 0, startLeft: 0, startTop: 0, handle: '' };
         let subtitles1 = [];
         let subtitles2 = [];
-        let subtitlesEnabled1 = false;
-        let subtitlesEnabled2 = false;
+        let subtitlesEnabled1 = true;
+        let subtitlesEnabled2 = true;
 
         // ===== Transform state (MAIN PLAYER ONLY) =====
         const ZOOM_STEP = 0.05;
@@ -696,9 +741,13 @@
             document.getElementById('subtitle1').addEventListener('change', (e) => loadSubtitle(e, 1));
             document.getElementById('subtitle2').addEventListener('change', (e) => loadSubtitle(e, 2));
             
-            // Subtitle toggle buttons
-            document.getElementById('subtitleBtn1').addEventListener('click', () => toggleSubtitles(1));
-            document.getElementById('subtitleBtn2').addEventListener('click', () => toggleSubtitles(2));
+            // Subtitle toggle buttons removed (default remains enabled)
+
+            // Settings dropdowns: open/close + actions
+            setupDropdown('1');
+            setupDropdown('2');
+
+            // No CC buttons; subtitles default enabled
 
             // Play/pause buttons
             document.getElementById('playBtn1').addEventListener('click', () => togglePlay(video1, 'playBtn1'));
@@ -725,6 +774,24 @@
             });
             document.getElementById('muteBtn1').addEventListener('click', () => toggleMute(video1, 'muteBtn1', 'volumeSlider1'));
             document.getElementById('muteBtn2').addEventListener('click', () => toggleMute(video2, 'muteBtn2', 'volumeSlider2'));
+            // Fullscreen button (main controls, toggles app-wide fullscreen including overlay)
+            const fsBtn = document.getElementById('fsBtnMain') || document.getElementById('fsBtn1');
+            if (fsBtn) fsBtn.addEventListener('click', () => toggleFullscreen());
+            // Hide any legacy fullscreen button in the left group if present
+            const legacyFs = document.getElementById('fsBtn1');
+            if (legacyFs && legacyFs !== fsBtn) legacyFs.style.display = 'none';
+            // Remove overlay fullscreen button if it exists
+            const fs2Old = document.getElementById('fsBtn2');
+            if (fs2Old) fs2Old.remove();
+
+            // Double-click on main player toggles fullscreen (ignore clicks on controls)
+            const mainContainer = document.getElementById('mainPlayer');
+            if (mainContainer) {
+                mainContainer.addEventListener('dblclick', (e) => {
+                    if (e.target.closest('.controls')) return;
+                    toggleFullscreen();
+                });
+            }
 
             // Initialize volume slider fills
             ['volumeSlider1','volumeSlider2'].forEach(id => {
@@ -735,8 +802,16 @@
                 }
             });
 
-            // Swap button
+            // Swap buttons
             document.getElementById('swapBtn').addEventListener('click', swapVideos);
+            const swapBtn2 = document.getElementById('swapBtn2');
+            if (swapBtn2) swapBtn2.addEventListener('click', swapVideos);
+
+            // Make overlay swap button use main button styling for visual parity
+            if (swapBtn2) {
+                swapBtn2.classList.remove('overlay-btn');
+                swapBtn2.classList.add('control-btn');
+            }
 
             // Sync control (Set only)
             document.getElementById('setSyncBtn').addEventListener('click', setSyncPoint);
@@ -768,6 +843,62 @@
 
             // Ensure initial transform is applied
             applyTransform();
+
+            // Initial subtitle update to honor default enabled state
+            updateSubtitles(1, video1.currentTime || 0);
+            updateSubtitles(2, video2.currentTime || 0);
+
+            // Initialize fullscreen button state
+            updateFullscreenButtons();
+        }
+
+        function toggleFullscreen() {
+            try {
+                const root = document.documentElement;
+                const isFs = !!document.fullscreenElement;
+                if (isFs) {
+                    if (document.exitFullscreen) document.exitFullscreen();
+                } else {
+                    if (root.requestFullscreen) root.requestFullscreen();
+                }
+            } catch (e) {
+                console.error('Fullscreen error:', e);
+            }
+        }
+
+        function updateFullscreenButtons() {
+            const fs1 = document.getElementById('fsBtnMain') || document.getElementById('fsBtn1');
+            if (fs1) fs1.textContent = '⛶'; // keep icon constant
+        }
+
+        document.addEventListener('fullscreenchange', updateFullscreenButtons);
+
+        function setupDropdown(id) {
+            const dropdown = document.getElementById(`settings${id}`);
+            if (!dropdown) return;
+            const toggle = document.getElementById(`settingsToggle${id}`);
+            const ccItem = document.getElementById(`ccToggle${id}`);
+
+            const closeAll = () => {
+                document.querySelectorAll('.dropdown.open').forEach(d => d.classList.remove('open'));
+            };
+
+            toggle.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const isOpen = dropdown.classList.contains('open');
+                closeAll();
+                if (!isOpen) dropdown.classList.add('open');
+            });
+
+            if (ccItem) {
+                ccItem.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    toggleSubtitles(id === '1' ? 1 : 2);
+                    dropdown.classList.remove('open');
+                });
+            }
+
+            document.addEventListener('click', closeAll);
         }
 
         // Hide controls and cursor when the mouse leaves the page,
@@ -970,7 +1101,7 @@
                 const btn = document.getElementById('subtitleBtn1');
                 const display = document.getElementById('subtitle1Display');
                 
-                btn.style.background = subtitlesEnabled1 ? 'rgba(255,255,255,0.3)' : 'none';
+                if (btn) btn.style.background = subtitlesEnabled1 ? 'rgba(255,255,255,0.3)' : 'none';
                 if (!subtitlesEnabled1) {
                     display.style.display = 'none';
                 }
@@ -979,7 +1110,7 @@
                 const btn = document.getElementById('subtitleBtn2');
                 const display = document.getElementById('subtitle2Display');
                 
-                btn.style.background = subtitlesEnabled2 ? 'rgba(255,255,255,0.3)' : 'none';
+                if (btn) btn.style.background = subtitlesEnabled2 ? 'rgba(255,255,255,0.3)' : 'none';
                 if (!subtitlesEnabled2) {
                     display.style.display = 'none';
                 }
@@ -1089,9 +1220,11 @@
                 subtitlesEnabled1 = tempSubtitlesEnabled2;
                 subtitlesEnabled2 = tempSubtitlesEnabled1;
                 
-                // Update subtitle button states
-                document.getElementById('subtitleBtn1').style.background = subtitlesEnabled1 ? 'rgba(255,255,255,0.3)' : 'none';
-                document.getElementById('subtitleBtn2').style.background = subtitlesEnabled2 ? 'rgba(255,255,255,0.3)' : 'none';
+                // Update subtitle button states (buttons may not exist)
+                const _b1 = document.getElementById('subtitleBtn1');
+                const _b2 = document.getElementById('subtitleBtn2');
+                if (_b1) _b1.style.background = subtitlesEnabled1 ? 'rgba(255,255,255,0.3)' : 'none';
+                if (_b2) _b2.style.background = subtitlesEnabled2 ? 'rgba(255,255,255,0.3)' : 'none';
                 
                 // Restore sync points with swapped values
                 if (wasSynced) {
