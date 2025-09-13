@@ -991,12 +991,29 @@
             
             video.currentTime = newTime;
             
-            // Sync seeking if synced - but be more precise about timing
-            if (isSynced && video === video1) {
-                const syncedTime = newTime - syncPoint1 + syncPoint2 + delay;
-                if (syncedTime >= 0 && syncedTime <= video2.duration) {
-                    video2.currentTime = syncedTime;
-                    lastSyncTime = Date.now(); // Update last sync time to prevent immediate re-sync
+            // Sync-aware seeking
+            if (isSynced) {
+                if (video === video1) {
+                    // When seeking video1, move video2 according to current mapping
+                    const syncedTime = newTime - syncPoint1 + syncPoint2 + delay;
+                    if (syncedTime >= 0 && syncedTime <= (video2.duration || Infinity)) {
+                        video2.currentTime = syncedTime;
+                        lastSyncTime = Date.now(); // prevent immediate re-sync
+                    }
+                } else if (video === video2) {
+                    // When seeking video2, immediately align video1 to the corresponding time
+                    // Mapping: t2 = (t1 - syncPoint1) + syncPoint2 + delay
+                    // Invert for t1: t1 = t2 - syncPoint2 - delay + syncPoint1
+                    const v1Target = newTime - (syncPoint2 || 0) - (delay || 0) + (syncPoint1 || 0);
+                    if (!isNaN(v1Target)) {
+                        const v1Dur = video1.duration || 0;
+                        const clamped = Math.max(0, Math.min(v1Dur || Number.MAX_SAFE_INTEGER, v1Target));
+                        if (v1Dur > 0) video1.currentTime = clamped;
+                    }
+                    // Also adjust mapping so subsequent playback keeps sync smoothly
+                    const v1Now = video1.currentTime || 0;
+                    syncPoint2 = newTime - (v1Now - (syncPoint1 || 0)) - (delay || 0);
+                    lastSyncTime = Date.now(); // small cooldown before next correction
                 }
             }
         }
