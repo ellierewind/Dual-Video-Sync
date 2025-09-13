@@ -37,6 +37,12 @@
             background: #000;
         }
 
+        /* Transform origin so rotations/scale center nicely */
+        #video1 {
+            transform-origin: center center;
+            will-change: transform;
+        }
+
         .controls {
             position: absolute;
             bottom: 0;
@@ -492,6 +498,44 @@
         let subtitlesEnabled1 = false;
         let subtitlesEnabled2 = false;
 
+        // ===== Transform state (MAIN PLAYER ONLY) =====
+        const ZOOM_STEP = 0.05;
+        const STRETCH_STEP = 0.05;
+        const ROTATE_STEP = 1;      // degrees per tap (Alt+Numpad1/3)
+        const MOVE_STEP = 20;       // px per tap (Ctrl+Numpad directions)
+        const MIN_ZOOM = 0.05;
+        const MAX_ZOOM = 10;
+        const MIN_STRETCH = 0.1;
+        const MAX_STRETCH = 10;
+
+        let tf = {
+            zoom: 1,
+            stretchX: 1,
+            stretchY: 1,
+            flipX: 1,
+            flipY: 1,
+            rot: 0,        // degrees
+            tx: 0,         // translate X (px)
+            ty: 0          // translate Y (px)
+        };
+
+        function clamp(v, min, max){ return Math.max(min, Math.min(max, v)); }
+
+        function applyTransform(){
+            const sx = tf.zoom * tf.stretchX * tf.flipX;
+            const sy = tf.zoom * tf.stretchY * tf.flipY;
+            video1.style.transform = `translate(${tf.tx}px, ${tf.ty}px) rotate(${tf.rot}deg) scale(${sx}, ${sy})`;
+        }
+
+        function resetTransforms(){
+            tf = { zoom: 1, stretchX: 1, stretchY: 1, flipX: 1, flipY: 1, rot: 0, tx: 0, ty: 0 };
+            applyTransform();
+        }
+
+        function recenter(){
+            tf.tx = 0; tf.ty = 0; applyTransform();
+        }
+
         // Initialize players
         function initializePlayers() {
             // File inputs
@@ -543,7 +587,7 @@
             });
             video1.addEventListener('timeupdate', handleSync);
 
-            // Keyboard controls
+            // Keyboard controls (includes transform hotkeys for MAIN player)
             document.addEventListener('keydown', handleKeyboard);
 
             // Dragging functionality
@@ -551,6 +595,9 @@
 
             // Inactivity handling (hide controls and cursor)
             setupInactivityHide();
+
+            // Ensure initial transform is applied
+            applyTransform();
         }
 
         // Hide controls and cursor after 1s of no mouse movement
@@ -708,7 +755,7 @@
                     const text = lines.slice(2).join('\n').trim();
                     
                     // Parse time format: 00:00:20,000 --> 00:00:24,400
-                    const timeMatch = timeString.match(/(\d{2}):(\d{2}):(\d{2}),(\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2}),(\d{3})/);
+                    const timeMatch = timeString.match(/(\d{2}):(\d{2}):(\d{2}),(\d{3})\s*--\>\s*(\d{2}):(\d{2}):(\d{2}),(\d{3})/);
                     
                     if (timeMatch && text) {
                         const startTime = parseInt(timeMatch[1]) * 3600 + 
@@ -881,6 +928,10 @@
                 } else {
                     document.getElementById('playBtn2').textContent = '▶';
                 }
+
+                // IMPORTANT: Keep transforms attached to MAIN player only.
+                // Swapping videos does not move transforms to overlay; they always apply to #video1.
+                applyTransform();
             });
         }
 
@@ -962,32 +1013,131 @@
             }
         }
 
+        // ================== Keyboard ==================
         function handleKeyboard(event) {
-            if (event.target.tagName === 'INPUT') return;
-            
-            switch(event.key) {
-                case 'ArrowLeft':
-                    event.preventDefault();
-                    skipTime(-5);
+            const tag = event.target.tagName;
+            if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+
+            // Space & arrows (existing behavior)
+            if (event.key === ' ') {
+                event.preventDefault();
+                togglePlay(video1, 'playBtn1');
+                return;
+            }
+            if (event.key === 'ArrowLeft') {
+                event.preventDefault();
+                skipTime(-5);
+                return;
+            }
+            if (event.key === 'ArrowRight') {
+                event.preventDefault();
+                skipTime(5);
+                return;
+            }
+
+            // Numpad transform/move hotkeys for MAIN player only
+            const code = event.code;
+            const alt = event.altKey;
+            const ctrl = event.ctrlKey;
+
+            switch(code) {
+                // === Zoom / Rotate90 / Move Up-Right ===
+                case 'Numpad9':
+                    if (alt) { // Rotate ⭮ 90° (clockwise)
+                        tf.rot += 90; applyTransform(); event.preventDefault();
+                    } else if (ctrl) { // Move Up-Right
+                        tf.tx += MOVE_STEP; tf.ty -= MOVE_STEP; applyTransform(); event.preventDefault();
+                    } else { // Zoom In
+                        tf.zoom = clamp(tf.zoom + ZOOM_STEP, MIN_ZOOM, MAX_ZOOM); applyTransform(); event.preventDefault();
+                    }
                     break;
-                case 'ArrowRight':
-                    event.preventDefault();
-                    skipTime(5);
+                // === Zoom Out / Rotate ⭯ / Move Down-Left ===
+                case 'Numpad1':
+                    if (alt) { // Rotate ⭯ (counterclockwise) small step
+                        tf.rot -= ROTATE_STEP; applyTransform(); event.preventDefault();
+                    } else if (ctrl) { // Move Down-Left
+                        tf.tx -= MOVE_STEP; tf.ty += MOVE_STEP; applyTransform(); event.preventDefault();
+                    } else { // Zoom Out
+                        tf.zoom = clamp(tf.zoom - ZOOM_STEP, MIN_ZOOM, MAX_ZOOM); applyTransform(); event.preventDefault();
+                    }
                     break;
-                case ' ':
-                    event.preventDefault();
-                    togglePlay(video1, 'playBtn1');
+                // === Horizontal Stretch / Flip H / Move Right ===
+                case 'Numpad6':
+                    if (alt) { // Flip Horizontally (toggle)
+                        tf.flipX *= -1; applyTransform(); event.preventDefault();
+                    } else if (ctrl) { // Move Right
+                        tf.tx += MOVE_STEP; applyTransform(); event.preventDefault();
+                    } else { // Stretch X
+                        tf.stretchX = clamp(tf.stretchX + STRETCH_STEP, MIN_STRETCH, MAX_STRETCH); applyTransform(); event.preventDefault();
+                    }
+                    break;
+                // === Horizontal Compress / Flip H / Move Left ===
+                case 'Numpad4':
+                    if (alt) { // Flip Horizontally (toggle)
+                        tf.flipX *= -1; applyTransform(); event.preventDefault();
+                    } else if (ctrl) { // Move Left
+                        tf.tx -= MOVE_STEP; applyTransform(); event.preventDefault();
+                    } else { // Compress X
+                        tf.stretchX = clamp(tf.stretchX - STRETCH_STEP, MIN_STRETCH, MAX_STRETCH); applyTransform(); event.preventDefault();
+                    }
+                    break;
+                // === Vertical Stretch / Flip V / Move Up ===
+                case 'Numpad8':
+                    if (alt) { // Flip Vertically (toggle)
+                        tf.flipY *= -1; applyTransform(); event.preventDefault();
+                    } else if (ctrl) { // Move Up
+                        tf.ty -= MOVE_STEP; applyTransform(); event.preventDefault();
+                    } else { // Stretch Y
+                        tf.stretchY = clamp(tf.stretchY + STRETCH_STEP, MIN_STRETCH, MAX_STRETCH); applyTransform(); event.preventDefault();
+                    }
+                    break;
+                // === Vertical Compress / Flip V / Move Down ===
+                case 'Numpad2':
+                    if (alt) { // Flip Vertically (toggle)
+                        tf.flipY *= -1; applyTransform(); event.preventDefault();
+                    } else if (ctrl) { // Move Down
+                        tf.ty += MOVE_STEP; applyTransform(); event.preventDefault();
+                    } else { // Compress Y
+                        tf.stretchY = clamp(tf.stretchY - STRETCH_STEP, MIN_STRETCH, MAX_STRETCH); applyTransform(); event.preventDefault();
+                    }
+                    break;
+                // === Rotate ⭮ (clockwise small) / Move Down-Right ===
+                case 'Numpad3':
+                    if (alt) { // Rotate ⭮
+                        tf.rot += ROTATE_STEP; applyTransform(); event.preventDefault();
+                    } else if (ctrl) { // Move Down-Right
+                        tf.tx += MOVE_STEP; tf.ty += MOVE_STEP; applyTransform(); event.preventDefault();
+                    }
+                    break;
+                // === Rotate ⭯ 90° (counterclockwise) / Move Up-Left ===
+                case 'Numpad7':
+                    if (alt) { // Rotate ⭯ 90°
+                        tf.rot -= 90; applyTransform(); event.preventDefault();
+                    } else if (ctrl) { // Move Up-Left
+                        tf.tx -= MOVE_STEP; tf.ty -= MOVE_STEP; applyTransform(); event.preventDefault();
+                    }
+                    break;
+                // === Recenter / Reset ===
+                case 'Numpad5':
+                    if (ctrl) { // Recenter (only translate)
+                        recenter(); event.preventDefault();
+                    } else { // Reset all transformations
+                        resetTransforms(); event.preventDefault();
+                    }
+                    break;
+                default:
+                    // no-op
                     break;
             }
         }
 
         function skipTime(seconds) {
-            const newTime = Math.max(0, Math.min(video1.duration, video1.currentTime + seconds));
+            const newTime = Math.max(0, Math.min(video1.duration || 0, (video1.currentTime || 0) + seconds));
             video1.currentTime = newTime;
             
             if (isSynced) {
                 const syncedTime = newTime - syncPoint1 + syncPoint2 + delay;
-                if (syncedTime >= 0 && syncedTime <= video2.duration) {
+                if (syncedTime >= 0 && syncedTime <= (video2.duration || 0)) {
                     video2.currentTime = syncedTime;
                     lastSyncTime = Date.now(); // Update last sync time to prevent immediate re-sync
                 }
