@@ -693,12 +693,18 @@
         }
 
         function changeSpeed(video, speed) {
-            video.playbackRate = parseFloat(speed);
-            
-            // Sync speed if synced
-            if (isSynced && video === video1) {
-                video2.playbackRate = parseFloat(speed);
-                document.getElementById('speedSelect2').value = speed;
+            const rate = parseFloat(speed);
+            video.playbackRate = rate;
+
+            // Sync speed both ways when synced
+            if (isSynced) {
+                if (video === video1) {
+                    video2.playbackRate = rate;
+                    document.getElementById('speedSelect2').value = String(rate);
+                } else if (video === video2) {
+                    video1.playbackRate = rate;
+                    document.getElementById('speedSelect1').value = String(rate);
+                }
             }
         }
 
