@@ -459,7 +459,7 @@
         .control-btn:hover, .overlay-btn:hover { background: rgba(255,255,255,0.14); border-color: rgba(255,255,255,0.22); }
         .control-btn:active, .overlay-btn:active { transform: scale(0.98); }
 
-        .time-display { color: var(--muted); min-width: 84px; }
+        .time-display { color: var(--muted); min-width: 64px; }
 
         .speed-select {
             background: rgba(255,255,255,0.08);
@@ -511,6 +511,11 @@
         #volumeSlider2 { width: 100px !important; height: 4px !important; }
         .overlay-controls .file-label { font-size: 13px !important; padding: 6px 12px !important; }
         .overlay-btn { font-size: 16px; padding: 6px 10px; }
+        /* Reduce spacing in overlay left group */
+        .overlay-control-row .control-group { gap: 4px; }
+        /* Reduce timestamp width just for overlay to bring speed closer */
+        #timeDisplay2 { min-width: 48px !important; }
+        .time-display + .speed-select { margin-left: 0 !important; }
 
         /* Sync panel theme match */
         .sync-controls {
