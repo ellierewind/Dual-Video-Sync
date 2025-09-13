@@ -167,8 +167,8 @@
             position: fixed;
             top: 20px;
             right: 20px;
-            width: 400px;
-            height: 225px;
+            width: 960px;
+            height: 540px;
             background: #000;
             border: 2px solid #333;
             border-radius: 8px;
@@ -512,7 +512,7 @@
         .overlay-controls .file-label { font-size: 13px !important; padding: 6px 12px !important; }
         .overlay-btn { font-size: 16px; padding: 6px 10px; }
         /* Reduce spacing in overlay left group */
-        .overlay-control-row .control-group { gap: 4px; }
+        .overlay-control-row .control-group { gap: 8px; }
         /* Reduce timestamp width just for overlay to bring speed closer */
         #timeDisplay2 { min-width: 48px !important; }
         .time-display + .speed-select { margin-left: 0 !important; }
@@ -594,7 +594,7 @@
             <div class="overlay-control-row">
                 <div class="control-group">
                     <button class="overlay-btn" id="playBtn2">▶</button>
-                    <span class="time-display" id="timeDisplay2">0:00</span>
+                    <span class="time-display" id="timeDisplay2">0:00 / 0:00</span>
                     <select class="speed-select" id="speedSelect2" style="font-size: 10px; padding: 2px 4px;">
                         <option value="1">1x</option>
                         <option value="1.25">1.25x</option>
@@ -770,7 +770,8 @@
             applyTransform();
         }
 
-        // Hide controls and cursor after 1s of no mouse movement
+        // Hide controls and cursor when the mouse leaves the page,
+        // and after 1s of no mouse movement while on the page
         function setupInactivityHide() {
             const IDLE_MS = 1000;
             let inactivityTimer = null;
@@ -797,6 +798,13 @@
             document.addEventListener('mousedown', resetTimer, { passive: true });
             document.addEventListener('touchstart', resetTimer, { passive: true });
             document.addEventListener('touchmove', resetTimer, { passive: true });
+
+            // Immediately hide when the cursor leaves the page/window,
+            // and show/reset when it enters or window regains focus
+            document.addEventListener('mouseleave', hideControls, { passive: true });
+            document.addEventListener('mouseenter', resetTimer, { passive: true });
+            window.addEventListener('blur', hideControls, { passive: true });
+            window.addEventListener('focus', resetTimer, { passive: true });
 
             // Start in non-idle state, then schedule initial hide
             resetTimer();
@@ -888,7 +896,7 @@
                 
                 const current = formatTime(video.currentTime);
                 const total = formatTime(video.duration);
-                timeDisplay.textContent = timeDisplayId.includes('2') ? current : `${current} / ${total}`;
+                timeDisplay.textContent = `${current} / ${total}`;
             }
         }
 
