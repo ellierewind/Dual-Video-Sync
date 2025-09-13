@@ -313,10 +313,6 @@
             z-index: 1001;
         }
 
-        .sync-group {
-            margin-bottom: 10px;
-        }
-
         .sync-label {
             display: block;
             margin-bottom: 5px;
@@ -749,6 +745,11 @@
                 updateProgress(video2, 'progressBar2', 'timeDisplay2');
                 updateSubtitles(2, video2.currentTime);
             });
+            // Keep play/pause icons in sync with state, even on programmatic play/pause
+            video1.addEventListener('play',   () => { const b = document.getElementById('playBtn1'); if (b) b.textContent = '⏸'; });
+            video1.addEventListener('pause',  () => { const b = document.getElementById('playBtn1'); if (b) b.textContent = '▶';  });
+            video2.addEventListener('play',   () => { const b = document.getElementById('playBtn2'); if (b) b.textContent = '⏸'; });
+            video2.addEventListener('pause',  () => { const b = document.getElementById('playBtn2'); if (b) b.textContent = '▶';  });
             video1.addEventListener('timeupdate', handleSync);
 
             // Keyboard controls (includes transform hotkeys for MAIN player)
@@ -1143,6 +1144,17 @@
                 // Start video2 from its sync point when video1 plays
                 video2.currentTime = syncPoint2;
                 
+                // Ensure both players are playing
+                if (video1.paused) {
+                    video1.play();
+                    const pb1 = document.getElementById('playBtn1');
+                    if (pb1) pb1.textContent = '⏸';
+                }
+                // Always start video2
+                video2.play();
+                const pb2 = document.getElementById('playBtn2');
+                if (pb2) pb2.textContent = '⏸';
+
                 // (sync status UI removed)
                 
                 // Hide sync controls after setting sync point
