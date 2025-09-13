@@ -1,0 +1,567 @@
+* {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #000;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+        }
+
+        .main-player-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            background: #000;
+        }
+
+        .video-player {
+            position: relative;
+            width: 100%;
+            height: 100%;
+        }
+
+        .video-element {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            background: #000;
+        }
+
+        /* Transform origin so rotations/scale center nicely */
+        #video1 {
+            transform-origin: center center;
+            will-change: transform;
+        }
+
+        .controls {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: linear-gradient(transparent, rgba(0,0,0,0.8));
+            padding: 20px;
+            transform: translateY(100%);
+            transition: transform 0.3s ease;
+        }
+
+        .video-player:hover .controls {
+            transform: translateY(0);
+        }
+
+        .progress-container {
+            width: 100%;
+            height: 6px;
+            background: rgba(255,255,255,0.3);
+            border-radius: 3px;
+            margin-bottom: 15px;
+            cursor: pointer;
+            position: relative;
+        }
+
+        .progress-bar {
+            height: 100%;
+            background: #ff0000;
+            border-radius: 3px;
+            width: 0%;
+            position: relative;
+        }
+
+        .progress-handle {
+            position: absolute;
+            right: -6px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 12px;
+            height: 12px;
+            background: #ff0000;
+            border-radius: 50%;
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+
+        .progress-container:hover .progress-handle {
+            opacity: 1;
+        }
+
+        .control-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            color: white;
+        }
+
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .control-btn {
+            background: none;
+            border: none;
+            color: white;
+            font-size: 18px;
+            cursor: pointer;
+            padding: 8px;
+            border-radius: 4px;
+            transition: background 0.2s;
+        }
+
+        .control-btn:hover {
+            background: rgba(255,255,255,0.2);
+        }
+
+        .time-display {
+            font-size: 14px;
+            min-width: 80px;
+        }
+
+        .speed-select {
+            background: rgba(0,0,0,0.6);
+            border: 1px solid rgba(255,255,255,0.3);
+            color: #fff;
+            padding: 4px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            appearance: none;
+            -webkit-appearance: none;
+            -moz-appearance: none;
+        }
+
+        /* Ensure dropdown list items stay readable on white menus */
+        .speed-select option {
+            color: #000;
+            background: #fff;
+        }
+
+        .file-input {
+            display: none;
+        }
+
+        .file-label {
+            background: #ff0000;
+            color: white;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: background 0.2s;
+        }
+
+        .file-label:hover {
+            background: #cc0000;
+        }
+
+        /* Overlay Player */
+        .overlay-player {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            width: 960px;
+            height: 540px;
+            background: #000;
+            border: 2px solid #333;
+            border-radius: 8px;
+            overflow: hidden;
+            z-index: 1000;
+            /* Use custom corner handles instead of native resizer */
+            resize: none;
+            min-width: 200px;
+            min-height: 112px;
+        }
+
+        /* Custom resize handles */
+        .resize-handle {
+            position: absolute;
+            width: 12px;
+            height: 12px;
+            background: transparent; /* invisible handle */
+            border: none;            /* remove visible border */
+            border-radius: 2px;
+            z-index: 1002;
+        }
+        .resize-handle.nw { top: -1px; left: -1px; cursor: nwse-resize; }
+        .resize-handle.ne { top: -1px; right: -1px; cursor: nesw-resize; }
+        .resize-handle.sw { bottom: -1px; left: -1px; cursor: nesw-resize; }
+        .resize-handle.se { bottom: -1px; right: -1px; cursor: nwse-resize; }
+        /* Sides: use thin full-length hit areas */
+        .resize-handle.n { top: -3px; left: 6px; right: 6px; height: 8px; width: auto; cursor: ns-resize; }
+        .resize-handle.s { bottom: -3px; left: 6px; right: 6px; height: 8px; width: auto; cursor: ns-resize; }
+        .resize-handle.e { right: -3px; top: 6px; bottom: 6px; width: 8px; height: auto; cursor: ew-resize; }
+        .resize-handle.w { left: -3px; top: 6px; bottom: 6px; width: 8px; height: auto; cursor: ew-resize; }
+
+
+
+        .subtitle-display {
+            position: absolute;
+            bottom: 80px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 4px;
+            font-size: 16px;
+            font-weight: bold;
+            text-align: center;
+            max-width: 80%;
+            line-height: 1.4;
+            z-index: 100;
+            display: none;
+            text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.8);
+        }
+
+        .overlay-subtitle-display {
+            position: absolute;
+            bottom: 40px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+            text-align: center;
+            max-width: 90%;
+            line-height: 1.2;
+            z-index: 100;
+            display: none;
+            text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.8);
+        }
+
+        .dragging {
+            user-select: none;
+        }
+
+        .overlay-controls {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: rgba(0,0,0,0.8);
+            padding: 8px;
+            transform: translateY(100%);
+            transition: transform 0.3s ease;
+        }
+
+        .overlay-player:hover .overlay-controls {
+            transform: translateY(0);
+        }
+
+        /* Idle state: hide cursor and controls after inactivity */
+        body.idle {
+            cursor: none;
+        }
+        body.idle .controls,
+        body.idle .overlay-controls {
+            transform: translateY(100%) !important;
+        }
+        /* When not idle, show both control bars */
+        body:not(.idle) .controls,
+        body:not(.idle) .overlay-controls {
+            transform: translateY(0) !important;
+        }
+
+        .overlay-progress {
+            width: 100%;
+            height: 3px;
+            background: rgba(255,255,255,0.3);
+            border-radius: 2px;
+            margin-bottom: 8px;
+            cursor: pointer;
+        }
+
+        .overlay-progress-bar {
+            height: 100%;
+            background: #ff0000;
+            border-radius: 2px;
+            width: 0%;
+        }
+
+        .overlay-control-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            color: white;
+            font-size: 12px;
+        }
+
+        .overlay-btn {
+            background: none;
+            border: none;
+            color: white;
+            font-size: 14px;
+            cursor: pointer;
+            padding: 4px;
+        }
+
+        /* Sync Controls */
+        .sync-controls {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            background: rgba(0,0,0,0.8);
+            color: white;
+            padding: 15px;
+            border-radius: 8px;
+            z-index: 1001;
+        }
+
+        .sync-label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 12px;
+        }
+
+        .sync-input {
+            width: 80px;
+            padding: 4px;
+            border: 1px solid #555;
+            background: #222;
+            color: white;
+            border-radius: 4px;
+        }
+
+        .sync-btn {
+            background: #ff0000;
+            color: white;
+            border: none;
+            padding: 8px 12px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 5px;
+            font-size: 12px;
+        }
+
+        .sync-btn:hover {
+            background: #cc0000;
+        }
+
+        .volume-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .volume-slider {
+            width: 80px;
+            height: 4px;
+            background: rgba(255,255,255,0.3);
+            outline: none;
+            border-radius: 2px;
+            cursor: pointer;
+        }
+
+        .volume-slider::-webkit-slider-thumb {
+            appearance: none;
+            width: 12px;
+            height: 12px;
+            background: #ff0000;
+            border-radius: 50%;
+            cursor: pointer;
+        }
+
+        .volume-slider::-moz-range-thumb {
+            width: 12px;
+            height: 12px;
+            background: #ff0000;
+            border-radius: 50%;
+            cursor: pointer;
+            border: none;
+        }
+
+        /* --- UI polish overrides (non-breaking) --- */
+        :root {
+            --accent: #ff2d55;
+            --accent-2: #ff8a9e;
+            --panel-bg: rgba(12,12,14,0.78);
+            --panel-stroke: rgba(255,255,255,0.10);
+            --text: #f5f5f7;
+            --muted: rgba(255,255,255,0.7);
+        }
+
+        .controls {
+            background: linear-gradient(transparent, var(--panel-bg));
+            -webkit-backdrop-filter: blur(8px);
+            backdrop-filter: blur(8px);
+            border-top: 1px solid var(--panel-stroke);
+            padding: 12px 16px 16px;
+            border-top-left-radius: 10px;
+            border-top-right-radius: 10px;
+        }
+
+        .overlay-controls {
+            background: var(--panel-bg);
+            -webkit-backdrop-filter: blur(8px);
+            backdrop-filter: blur(8px);
+            border-top: 1px solid var(--panel-stroke);
+            padding: 8px 10px 10px;
+        }
+
+        .progress-container {
+            height: 8px;
+            background: rgba(255,255,255,0.18);
+            border-radius: 6px;
+            margin-bottom: 10px;
+            overflow: hidden;
+        }
+
+        .progress-bar {
+            background: linear-gradient(90deg, var(--accent), var(--accent-2));
+            border-radius: 6px;
+        }
+
+        .progress-handle {
+            right: -7px;
+            width: 14px;
+            height: 14px;
+            background: var(--accent);
+            border: 2px solid #fff;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+        }
+
+        .overlay-progress {
+            height: 6px;
+            background: rgba(255,255,255,0.18);
+            border-radius: 6px;
+            margin-bottom: 6px;
+            overflow: hidden;
+        }
+
+        .overlay-progress-bar {
+            background: linear-gradient(90deg, var(--accent), var(--accent-2));
+            border-radius: 6px;
+        }
+
+        .control-row {
+            color: var(--text);
+            gap: 12px;
+        }
+        .control-group { gap: 10px; }
+
+        .control-btn, .overlay-btn {
+            background: rgba(255,255,255,0.08);
+            border: 1px solid var(--panel-stroke);
+            color: var(--text);
+            font-size: 16px;
+            padding: 6px 10px;
+            border-radius: 10px;
+            transition: transform 0.1s ease, background 0.15s ease, border-color 0.15s ease;
+            line-height: 1;
+        }
+        .overlay-btn { font-size: 14px; padding: 4px 8px; }
+        .control-btn:hover, .overlay-btn:hover { background: rgba(255,255,255,0.14); border-color: rgba(255,255,255,0.22); }
+        .control-btn:active, .overlay-btn:active { transform: scale(0.98); }
+
+        .time-display { color: var(--muted); min-width: 64px; }
+
+        .speed-select {
+            background: rgba(255,255,255,0.08);
+            border: 1px solid var(--panel-stroke);
+            color: var(--text);
+            padding: 6px 28px 6px 10px;
+            border-radius: 10px;
+            appearance: none;
+            -webkit-appearance: none;
+            -moz-appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 8px center;
+            background-size: 14px;
+        }
+
+        .file-label {
+            background: var(--accent);
+            color: #fff;
+            padding: 6px 12px;
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.18);
+            transition: filter 0.15s ease, transform 0.1s ease;
+        }
+        .file-label:hover { filter: brightness(1.03); }
+        .file-label:active { transform: translateY(1px); }
+
+        .overlay-player {
+            border: 1px solid var(--panel-stroke);
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+        }
+
+        .volume-container { gap: 6px; }
+        .volume-slider { width: 100px; height: 4px; background: transparent; border-radius: 999px; -webkit-appearance: none; appearance: none; }
+        /* Dynamic fill based on --vol (0%–100%) */
+        .volume-slider::-webkit-slider-runnable-track { height: 4px; background: linear-gradient(90deg, var(--accent) 0 var(--vol, 100%), rgba(255,255,255,0.18) var(--vol, 100%) 100%); border-radius: 999px; }
+        .volume-slider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; margin-top: -4px; width: 12px; height: 12px; background: #fff; border: 2px solid var(--accent); border-radius: 50%; box-shadow: 0 2px 6px rgba(0,0,0,0.3); }
+        .volume-slider::-moz-range-track { height: 4px; background: linear-gradient(90deg, var(--accent) 0 var(--vol, 100%), rgba(255,255,255,0.18) var(--vol, 100%) 100%); border-radius: 999px; }
+        .volume-slider::-moz-range-thumb { width: 12px; height: 12px; background: #fff; border: 2px solid var(--accent); border-radius: 50%; box-shadow: 0 2px 6px rgba(0,0,0,0.3); }
+
+        .subtitle-display { border-radius: 10px; font-size: 18px; padding: 8px 14px; }
+        .overlay-subtitle-display { border-radius: 8px; }
+
+        /* --- Alignment tweaks for overlay + sync panel --- */
+        /* Override inline sizes for overlay elements to match main */
+        #speedSelect2 { font-size: 13px !important; padding: 6px 28px 6px 10px !important; }
+        #subtitleBtn2 { font-size: 13px !important; }
+        #volumeSlider2 { width: 100px !important; height: 4px !important; }
+        .overlay-controls .file-label { font-size: 13px !important; padding: 6px 12px !important; }
+        .overlay-btn { font-size: 16px; padding: 6px 10px; }
+        /* Reduce spacing in overlay left group */
+        .overlay-control-row .control-group { gap: 8px; }
+        /* Reduce timestamp width just for overlay to bring speed closer */
+        #timeDisplay2 { min-width: 48px !important; }
+        .time-display + .speed-select { margin-left: 0 !important; }
+
+        /* Sync panel theme match */
+        .sync-controls {
+            background: var(--panel-bg);
+            border: 1px solid var(--panel-stroke);
+            -webkit-backdrop-filter: blur(8px);
+            backdrop-filter: blur(8px);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+        }
+        .sync-input {
+            border: 1px solid var(--panel-stroke);
+            background: rgba(255,255,255,0.06);
+            color: var(--text);
+        }
+        .sync-label { color: var(--muted); }
+        .sync-btn {
+            background: var(--accent);
+            border: 1px solid rgba(255,255,255,0.18);
+        }
+        .sync-btn:hover { filter: brightness(1.03); }
+
+        /* Dropdown menus for CC/SRT */
+        .dropdown { position: relative; }
+        .dropdown-toggle { line-height: 1; }
+        .dropdown-menu {
+            position: absolute;
+            bottom: 100%;
+            right: 0;
+            background: var(--panel-bg);
+            border: 1px solid var(--panel-stroke);
+            border-radius: 10px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.4);
+            padding: 6px;
+            display: none;
+            min-width: 150px;
+            z-index: 1100;
+        }
+        .dropdown.open > .dropdown-menu { display: block; }
+        .dropdown-item {
+            display: block;
+            width: 100%;
+            text-align: left;
+            color: var(--text);
+            background: transparent;
+            border: 1px solid transparent;
+            border-radius: 8px;
+            padding: 6px 10px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        .dropdown-item:hover { background: rgba(255,255,255,0.10); border-color: rgba(255,255,255,0.16); }
