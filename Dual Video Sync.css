@@ -377,6 +377,7 @@
         /* --- UI polish overrides (non-breaking) --- */
         :root {
             --accent: #ff2d55;
+            --accent-hover: #e63a5c; /* calmer, slightly darker */
             --accent-2: #ff8a9e;
             --panel-bg: rgba(12,12,14,0.78);
             --panel-stroke: rgba(255,255,255,0.10);
@@ -480,10 +481,11 @@
             padding: 6px 12px;
             border-radius: 10px;
             border: 1px solid rgba(255,255,255,0.18);
-            transition: filter 0.15s ease, transform 0.1s ease;
+            transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease, transform 0.1s ease;
         }
-        .file-label:hover { filter: brightness(1.03); }
+        .file-label:hover { background: var(--accent-hover); border-color: rgba(255,255,255,0.24); box-shadow: 0 2px 8px rgba(0,0,0,0.35); }
         .file-label:active { transform: translateY(1px); }
+        .file-label:focus-visible { outline: 2px solid rgba(255,255,255,0.35); outline-offset: 2px; }
 
         .overlay-player {
             border: 1px solid var(--panel-stroke);
@@ -532,8 +534,11 @@
         .sync-btn {
             background: var(--accent);
             border: 1px solid rgba(255,255,255,0.18);
+            transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease, transform 0.1s ease;
         }
-        .sync-btn:hover { filter: brightness(1.03); }
+        .sync-btn:hover { background: var(--accent-hover); border-color: rgba(255,255,255,0.24); box-shadow: 0 2px 8px rgba(0,0,0,0.35); }
+        .sync-btn:active { transform: translateY(1px); }
+        .sync-btn:focus-visible { outline: 2px solid rgba(255,255,255,0.35); outline-offset: 2px; }
 
         /* Dropdown menus for CC/SRT */
         .dropdown { position: relative; }
