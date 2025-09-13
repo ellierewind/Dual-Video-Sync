@@ -692,6 +692,8 @@
         let subtitles2 = [];
         let subtitlesEnabled1 = true;
         let subtitlesEnabled2 = true;
+        // Global playback rate that persists across loads
+        let globalPlaybackRate = 1;
 
         // ===== Transform state (MAIN PLAYER ONLY) =====
         const ZOOM_STEP = 0.05;
@@ -760,6 +762,16 @@
             // Speed controls
             document.getElementById('speedSelect1').addEventListener('change', (e) => changeSpeed(video1, e.target.value));
             document.getElementById('speedSelect2').addEventListener('change', (e) => changeSpeed(video2, e.target.value));
+            // Ensure both selects and playbackRates start in sync
+            const s1 = document.getElementById('speedSelect1');
+            const initialRate = (s1 && s1.value) ? s1.value : '1';
+            changeSpeed(video1, initialRate);
+
+            // Ensure any future metadata load applies the global rate
+            ['loadedmetadata','emptied'].forEach(evt => {
+                video1.addEventListener(evt, () => { try { video1.playbackRate = globalPlaybackRate; } catch {} }, { passive: true });
+                video2.addEventListener(evt, () => { try { video2.playbackRate = globalPlaybackRate; } catch {} }, { passive: true });
+            });
 
             // Volume controls
             document.getElementById('volumeSlider1').addEventListener('input', (e) => {
@@ -947,6 +959,9 @@
                 const url = URL.createObjectURL(file);
                 video.src = url;
                 video.load();
+                // Apply the user's chosen rate immediately and on metadata
+                try { video.playbackRate = globalPlaybackRate; } catch {}
+                video.addEventListener('loadedmetadata', () => { try { video.playbackRate = globalPlaybackRate; } catch {} }, { once: true });
             }
         }
 
@@ -1020,18 +1035,14 @@
 
         function changeSpeed(video, speed) {
             const rate = parseFloat(speed);
-            video.playbackRate = rate;
-
-            // Sync speed both ways when synced
-            if (isSynced) {
-                if (video === video1) {
-                    video2.playbackRate = rate;
-                    document.getElementById('speedSelect2').value = String(rate);
-                } else if (video === video2) {
-                    video1.playbackRate = rate;
-                    document.getElementById('speedSelect1').value = String(rate);
-                }
-            }
+            globalPlaybackRate = rate; // persist for future loads
+            // Always keep both players and both selects in lockstep
+            try { video1.playbackRate = rate; } catch {}
+            try { video2.playbackRate = rate; } catch {}
+            const s1 = document.getElementById('speedSelect1');
+            const s2 = document.getElementById('speedSelect2');
+            if (s1) s1.value = String(rate);
+            if (s2) s2.value = String(rate);
         }
 
         function updateProgress(video, progressBarId, timeDisplayId) {
