@@ -499,9 +499,10 @@
 
         .volume-container { gap: 6px; }
         .volume-slider { width: 100px; height: 4px; background: transparent; border-radius: 999px; -webkit-appearance: none; appearance: none; }
-        .volume-slider::-webkit-slider-runnable-track { height: 4px; background: linear-gradient(90deg, var(--accent), var(--accent-2)); border-radius: 999px; }
+        /* Dynamic fill based on --vol (0%–100%) */
+        .volume-slider::-webkit-slider-runnable-track { height: 4px; background: linear-gradient(90deg, var(--accent) 0 var(--vol, 100%), rgba(255,255,255,0.18) var(--vol, 100%) 100%); border-radius: 999px; }
         .volume-slider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; margin-top: -4px; width: 12px; height: 12px; background: #fff; border: 2px solid var(--accent); border-radius: 50%; box-shadow: 0 2px 6px rgba(0,0,0,0.3); }
-        .volume-slider::-moz-range-track { height: 4px; background: linear-gradient(90deg, var(--accent), var(--accent-2)); border-radius: 999px; }
+        .volume-slider::-moz-range-track { height: 4px; background: linear-gradient(90deg, var(--accent) 0 var(--vol, 100%), rgba(255,255,255,0.18) var(--vol, 100%) 100%); border-radius: 999px; }
         .volume-slider::-moz-range-thumb { width: 12px; height: 12px; background: #fff; border: 2px solid var(--accent); border-radius: 50%; box-shadow: 0 2px 6px rgba(0,0,0,0.3); }
 
         .subtitle-display { border-radius: 10px; font-size: 18px; padding: 8px 14px; }
@@ -624,16 +625,9 @@
     <!-- Sync Controls -->
     <div class="sync-controls" id="syncControls">
         <div class="sync-group">
-            <label class="sync-label">Video 2 Delay (seconds):</label>
-            <input type="number" class="sync-input" id="delayInput" value="0" step="0.1">
-        </div>
-        <div class="sync-group">
             <button class="sync-btn" id="setSyncBtn">Set Sync Point</button>
-            <button class="sync-btn" id="clearSyncBtn">Clear Sync</button>
         </div>
-        <div class="sync-group">
-            <small>Sync Status: <span id="syncStatus">Not synced</span></small>
-        </div>
+        
     </div>
 
     <script>
@@ -718,18 +712,33 @@
             document.getElementById('speedSelect2').addEventListener('change', (e) => changeSpeed(video2, e.target.value));
 
             // Volume controls
-            document.getElementById('volumeSlider1').addEventListener('input', (e) => changeVolume(video1, e.target.value, 'muteBtn1'));
-            document.getElementById('volumeSlider2').addEventListener('input', (e) => changeVolume(video2, e.target.value, 'muteBtn2'));
+            document.getElementById('volumeSlider1').addEventListener('input', (e) => {
+                changeVolume(video1, e.target.value, 'muteBtn1');
+                const pct = Math.max(0, Math.min(1, parseFloat(e.target.value))) * 100;
+                e.target.style.setProperty('--vol', pct + '%');
+            });
+            document.getElementById('volumeSlider2').addEventListener('input', (e) => {
+                changeVolume(video2, e.target.value, 'muteBtn2');
+                const pct = Math.max(0, Math.min(1, parseFloat(e.target.value))) * 100;
+                e.target.style.setProperty('--vol', pct + '%');
+            });
             document.getElementById('muteBtn1').addEventListener('click', () => toggleMute(video1, 'muteBtn1', 'volumeSlider1'));
             document.getElementById('muteBtn2').addEventListener('click', () => toggleMute(video2, 'muteBtn2', 'volumeSlider2'));
+
+            // Initialize volume slider fills
+            ['volumeSlider1','volumeSlider2'].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) {
+                    const pct = Math.max(0, Math.min(1, parseFloat(el.value))) * 100;
+                    el.style.setProperty('--vol', pct + '%');
+                }
+            });
 
             // Swap button
             document.getElementById('swapBtn').addEventListener('click', swapVideos);
 
-            // Sync controls
+            // Sync control (Set only)
             document.getElementById('setSyncBtn').addEventListener('click', setSyncPoint);
-            document.getElementById('clearSyncBtn').addEventListener('click', clearSync);
-            document.getElementById('delayInput').addEventListener('change', updateDelay);
 
             // Video events
             video1.addEventListener('timeupdate', () => {
@@ -1048,6 +1057,11 @@
                 // Update UI controls
                 document.getElementById('volumeSlider1').value = video2Volume;
                 document.getElementById('volumeSlider2').value = video1Volume;
+                // Update visual fills after programmatic value changes
+                const vs1 = document.getElementById('volumeSlider1');
+                const vs2 = document.getElementById('volumeSlider2');
+                if (vs1) vs1.style.setProperty('--vol', (video2Volume * 100) + '%');
+                if (vs2) vs2.style.setProperty('--vol', (video1Volume * 100) + '%');
                 document.getElementById('speedSelect1').value = video2PlaybackRate;
                 document.getElementById('speedSelect2').value = video1PlaybackRate;
                 
@@ -1070,9 +1084,6 @@
                     syncPoint1 = tempSyncPoint2; // Swap sync points
                     syncPoint2 = tempSyncPoint1;
                     isSynced = true;
-                    
-                    document.getElementById('syncStatus').textContent = 
-                        `Synced at ${formatTime(syncPoint1)} / ${formatTime(syncPoint2)}`;
                 }
                 
                 // Restore play states
@@ -1116,6 +1127,7 @@
                 video.muted = false;
                 video.volume = slider.value;
                 changeVolume(video, slider.value, muteBtnId);
+                if (slider) slider.style.setProperty('--vol', (parseFloat(slider.value) * 100) + '%');
             } else {
                 video.muted = true;
                 muteBtn.textContent = '🔇';
@@ -1131,27 +1143,14 @@
                 // Start video2 from its sync point when video1 plays
                 video2.currentTime = syncPoint2;
                 
-                document.getElementById('syncStatus').textContent = 
-                    `Synced at ${formatTime(syncPoint1)} / ${formatTime(syncPoint2)}`;
+                // (sync status UI removed)
                 
                 // Hide sync controls after setting sync point
                 document.getElementById('syncControls').style.display = 'none';
             }
         }
 
-        function clearSync() {
-            syncPoint1 = null;
-            syncPoint2 = null;
-            isSynced = false;
-            document.getElementById('syncStatus').textContent = 'Not synced';
-            
-            // Show sync controls again when clearing sync
-            document.getElementById('syncControls').style.display = 'block';
-        }
-
-        function updateDelay() {
-            delay = parseFloat(document.getElementById('delayInput').value);
-        }
+        // (Clear Sync and Delay controls removed)
 
         let lastSyncTime = 0;
         const SYNC_THRESHOLD = 0.5; // Only sync if difference is more than 0.5 seconds
