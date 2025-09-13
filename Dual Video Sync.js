@@ -16,6 +16,20 @@
         // Global playback rate that persists across loads
         let globalPlaybackRate = 1;
 
+        // ===== Persistence (localStorage) =====
+        const LS_KEYS = {
+            rate: 'dvs:rate',
+            overlayGeom: 'dvs:overlay:geom',
+            mainTf: 'dvs:main:tf'
+        };
+
+        function lsGet(key) {
+            try { return window.localStorage.getItem(key); } catch { return null; }
+        }
+        function lsSet(key, val) {
+            try { window.localStorage.setItem(key, val); } catch {}
+        }
+
         // ===== Transform state (MAIN PLAYER ONLY) =====
         const ZOOM_STEP = 0.05;
         const STRETCH_STEP = 0.05;
@@ -39,10 +53,20 @@
 
         function clamp(v, min, max){ return Math.max(min, Math.min(max, v)); }
 
+        // Debounced save for transform updates
+        let saveTfTimer = null;
+        function scheduleSaveTf() {
+            if (saveTfTimer) clearTimeout(saveTfTimer);
+            saveTfTimer = setTimeout(() => {
+                lsSet(LS_KEYS.mainTf, JSON.stringify(tf));
+            }, 200);
+        }
+
         function applyTransform(){
             const sx = tf.zoom * tf.stretchX * tf.flipX;
             const sy = tf.zoom * tf.stretchY * tf.flipY;
             video1.style.transform = `translate(${tf.tx}px, ${tf.ty}px) rotate(${tf.rot}deg) scale(${sx}, ${sy})`;
+            scheduleSaveTf();
         }
 
         function resetTransforms(){
@@ -83,9 +107,13 @@
             // Speed controls
             document.getElementById('speedSelect1').addEventListener('change', (e) => changeSpeed(video1, e.target.value));
             document.getElementById('speedSelect2').addEventListener('change', (e) => changeSpeed(video2, e.target.value));
-            // Ensure both selects and playbackRates start in sync
+            // Ensure both selects and playbackRates start in sync, using saved rate if available
             const s1 = document.getElementById('speedSelect1');
-            const initialRate = (s1 && s1.value) ? s1.value : '1';
+            const savedRateStr = lsGet(LS_KEYS.rate);
+            const savedRate = savedRateStr ? parseFloat(savedRateStr) : NaN;
+            const initialRate = Number.isFinite(savedRate)
+                ? String(savedRate)
+                : (s1 && s1.value) ? s1.value : '1';
             changeSpeed(video1, initialRate);
 
             // Ensure any future metadata load applies the global rate
@@ -168,13 +196,24 @@
             // Keyboard controls (includes transform hotkeys for MAIN player)
             document.addEventListener('keydown', handleKeyboard);
 
-            // Dragging functionality
+            // Dragging functionality (restores saved overlay geometry)
             initializeDragging();
 
             // Inactivity handling (hide controls and cursor)
             setupInactivityHide();
 
-            // Ensure initial transform is applied
+            // Restore saved transform (if any), then ensure it is applied
+            (function restoreTf(){
+                const data = lsGet(LS_KEYS.mainTf);
+                if (!data) return;
+                try {
+                    const obj = JSON.parse(data);
+                    const keys = ['zoom','stretchX','stretchY','flipX','flipY','rot','tx','ty'];
+                    let ok = true;
+                    keys.forEach(k => { if (typeof obj[k] !== 'number') ok = false; });
+                    if (ok) tf = obj;
+                } catch {}
+            })();
             applyTransform();
 
             // Initial subtitle update to honor default enabled state
@@ -364,6 +403,8 @@
             const s2 = document.getElementById('speedSelect2');
             if (s1) s1.value = String(rate);
             if (s2) s2.value = String(rate);
+            // Persist user choice
+            lsSet(LS_KEYS.rate, String(rate));
         }
 
         function updateProgress(video, progressBarId, timeDisplayId) {
@@ -814,6 +855,23 @@
         function initializeDragging() {
             const overlay = document.getElementById('overlayPlayer');
 
+            // Restore saved overlay geometry (position and size)
+            (function restoreOverlayGeom(){
+                const data = lsGet(LS_KEYS.overlayGeom);
+                if (!data) return;
+                try {
+                    const g = JSON.parse(data);
+                    const valid = v => typeof v === 'number' && isFinite(v) && v >= 0;
+                    if (g && valid(g.left) && valid(g.top) && valid(g.width) && valid(g.height)) {
+                        overlay.style.left = g.left + 'px';
+                        overlay.style.top = g.top + 'px';
+                        overlay.style.width = g.width + 'px';
+                        overlay.style.height = g.height + 'px';
+                        overlay.style.right = 'auto';
+                    }
+                } catch {}
+            })();
+
             overlay.addEventListener('mousedown', startDrag);
             // Corner resize handles
             overlay.querySelectorAll('.resize-handle').forEach(h => {
@@ -864,6 +922,9 @@
                     
                     // Re-enable resize after dragging
                     overlay.style.resize = 'none';
+
+                    // Persist geometry
+                    saveOverlayGeom(overlay);
                 }
             }
 
@@ -964,7 +1025,23 @@
                 document.removeEventListener('mousemove', doResize);
                 document.removeEventListener('mouseup', stopResize);
                 document.body.classList.remove('dragging');
+
+                // Persist geometry
+                saveOverlayGeom(overlay);
             }
+        }
+
+        function saveOverlayGeom(overlayEl) {
+            try {
+                const rect = overlayEl.getBoundingClientRect();
+                const geom = {
+                    left: Math.round(rect.left),
+                    top: Math.round(rect.top),
+                    width: Math.round(rect.width),
+                    height: Math.round(rect.height)
+                };
+                lsSet(LS_KEYS.overlayGeom, JSON.stringify(geom));
+            } catch {}
         }
 
         function toggleOverlay() {
