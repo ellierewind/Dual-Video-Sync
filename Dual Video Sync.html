@@ -379,6 +379,161 @@
             cursor: pointer;
             border: none;
         }
+
+        /* --- UI polish overrides (non-breaking) --- */
+        :root {
+            --accent: #ff2d55;
+            --accent-2: #ff8a9e;
+            --panel-bg: rgba(12,12,14,0.78);
+            --panel-stroke: rgba(255,255,255,0.10);
+            --text: #f5f5f7;
+            --muted: rgba(255,255,255,0.7);
+        }
+
+        .controls {
+            background: linear-gradient(transparent, var(--panel-bg));
+            -webkit-backdrop-filter: blur(8px);
+            backdrop-filter: blur(8px);
+            border-top: 1px solid var(--panel-stroke);
+            padding: 12px 16px 16px;
+            border-top-left-radius: 10px;
+            border-top-right-radius: 10px;
+        }
+
+        .overlay-controls {
+            background: var(--panel-bg);
+            -webkit-backdrop-filter: blur(8px);
+            backdrop-filter: blur(8px);
+            border-top: 1px solid var(--panel-stroke);
+            padding: 8px 10px 10px;
+        }
+
+        .progress-container {
+            height: 8px;
+            background: rgba(255,255,255,0.18);
+            border-radius: 6px;
+            margin-bottom: 10px;
+            overflow: hidden;
+        }
+
+        .progress-bar {
+            background: linear-gradient(90deg, var(--accent), var(--accent-2));
+            border-radius: 6px;
+        }
+
+        .progress-handle {
+            right: -7px;
+            width: 14px;
+            height: 14px;
+            background: var(--accent);
+            border: 2px solid #fff;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+        }
+
+        .overlay-progress {
+            height: 6px;
+            background: rgba(255,255,255,0.18);
+            border-radius: 6px;
+            margin-bottom: 6px;
+            overflow: hidden;
+        }
+
+        .overlay-progress-bar {
+            background: linear-gradient(90deg, var(--accent), var(--accent-2));
+            border-radius: 6px;
+        }
+
+        .control-row {
+            color: var(--text);
+            gap: 12px;
+        }
+        .control-group { gap: 10px; }
+
+        .control-btn, .overlay-btn {
+            background: rgba(255,255,255,0.08);
+            border: 1px solid var(--panel-stroke);
+            color: var(--text);
+            font-size: 16px;
+            padding: 6px 10px;
+            border-radius: 10px;
+            transition: transform 0.1s ease, background 0.15s ease, border-color 0.15s ease;
+            line-height: 1;
+        }
+        .overlay-btn { font-size: 14px; padding: 4px 8px; }
+        .control-btn:hover, .overlay-btn:hover { background: rgba(255,255,255,0.14); border-color: rgba(255,255,255,0.22); }
+        .control-btn:active, .overlay-btn:active { transform: scale(0.98); }
+
+        .time-display { color: var(--muted); min-width: 84px; }
+
+        .speed-select {
+            background: rgba(255,255,255,0.08);
+            border: 1px solid var(--panel-stroke);
+            color: var(--text);
+            padding: 6px 28px 6px 10px;
+            border-radius: 10px;
+            appearance: none;
+            -webkit-appearance: none;
+            -moz-appearance: none;
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 8px center;
+            background-size: 14px;
+        }
+
+        .file-label {
+            background: var(--accent);
+            color: #fff;
+            padding: 6px 12px;
+            border-radius: 10px;
+            border: 1px solid rgba(255,255,255,0.18);
+            transition: filter 0.15s ease, transform 0.1s ease;
+        }
+        .file-label:hover { filter: brightness(1.03); }
+        .file-label:active { transform: translateY(1px); }
+
+        .overlay-player {
+            border: 1px solid var(--panel-stroke);
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.6);
+        }
+
+        .volume-container { gap: 6px; }
+        .volume-slider { width: 100px; height: 4px; background: transparent; border-radius: 999px; -webkit-appearance: none; appearance: none; }
+        .volume-slider::-webkit-slider-runnable-track { height: 4px; background: linear-gradient(90deg, var(--accent), var(--accent-2)); border-radius: 999px; }
+        .volume-slider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; margin-top: -4px; width: 12px; height: 12px; background: #fff; border: 2px solid var(--accent); border-radius: 50%; box-shadow: 0 2px 6px rgba(0,0,0,0.3); }
+        .volume-slider::-moz-range-track { height: 4px; background: linear-gradient(90deg, var(--accent), var(--accent-2)); border-radius: 999px; }
+        .volume-slider::-moz-range-thumb { width: 12px; height: 12px; background: #fff; border: 2px solid var(--accent); border-radius: 50%; box-shadow: 0 2px 6px rgba(0,0,0,0.3); }
+
+        .subtitle-display { border-radius: 10px; font-size: 18px; padding: 8px 14px; }
+        .overlay-subtitle-display { border-radius: 8px; }
+
+        /* --- Alignment tweaks for overlay + sync panel --- */
+        /* Override inline sizes for overlay elements to match main */
+        #speedSelect2 { font-size: 13px !important; padding: 6px 28px 6px 10px !important; }
+        #subtitleBtn2 { font-size: 13px !important; }
+        #volumeSlider2 { width: 100px !important; height: 4px !important; }
+        .overlay-controls .file-label { font-size: 13px !important; padding: 6px 12px !important; }
+        .overlay-btn { font-size: 16px; padding: 6px 10px; }
+
+        /* Sync panel theme match */
+        .sync-controls {
+            background: var(--panel-bg);
+            border: 1px solid var(--panel-stroke);
+            -webkit-backdrop-filter: blur(8px);
+            backdrop-filter: blur(8px);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+        }
+        .sync-input {
+            border: 1px solid var(--panel-stroke);
+            background: rgba(255,255,255,0.06);
+            color: var(--text);
+        }
+        .sync-label { color: var(--muted); }
+        .sync-btn {
+            background: var(--accent);
+            border: 1px solid rgba(255,255,255,0.18);
+        }
+        .sync-btn:hover { filter: brightness(1.03); }
     </style>
 </head>
 <body>
@@ -602,7 +757,7 @@
 
         // Hide controls and cursor after 1s of no mouse movement
         function setupInactivityHide() {
-            const IDLE_MS = 300;
+            const IDLE_MS = 1000;
             let inactivityTimer = null;
 
             const root = document.body;
