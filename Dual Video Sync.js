@@ -152,6 +152,8 @@
                     if (e.target.closest('.controls')) return;
                     toggleFullscreen();
                 });
+                // Scroll wheel over main player adjusts volume of video1
+                mainContainer.addEventListener('wheel', (e) => handleWheelVolume(e, video1, 'volumeSlider1', 'muteBtn1'), { passive: false });
             }
 
             // Initialize volume slider fills
@@ -172,6 +174,12 @@
             if (swapBtn2) {
                 swapBtn2.classList.remove('overlay-btn');
                 swapBtn2.classList.add('control-btn');
+            }
+
+            // Scroll wheel over overlay player adjusts volume of video2
+            const overlayContainer = document.getElementById('overlayPlayer');
+            if (overlayContainer) {
+                overlayContainer.addEventListener('wheel', (e) => handleWheelVolume(e, video2, 'volumeSlider2', 'muteBtn2'), { passive: false });
             }
 
             // Sync control (Set only)
@@ -222,6 +230,30 @@
 
             // Initialize fullscreen button state
             updateFullscreenButtons();
+        }
+
+        // Wheel-based volume control for a specific player
+        // Use 0.1 to match the sliders' step attribute
+        const VOLUME_WHEEL_STEP = 0.1; // per notch
+        function handleWheelVolume(event, video, sliderId, muteBtnId) {
+            // Avoid interfering with pinch-zoom or modified scrolls
+            if (event.ctrlKey || event.shiftKey || event.altKey || event.metaKey) return;
+            event.preventDefault();
+            const slider = document.getElementById(sliderId);
+            if (!slider) return;
+            const dir = event.deltaY < 0 ? 1 : -1; // up increases, down decreases
+            const current = Math.max(0, Math.min(1, parseFloat(slider.value)));
+            // Snap to 0.1 steps to avoid slider snapping back
+            let next = current + dir * VOLUME_WHEEL_STEP;
+            next = Math.max(0, Math.min(1, Math.round(next * 10) / 10));
+            if (next === current) return;
+            // Changing volume should unmute
+            if (video.muted && next > 0) video.muted = false;
+            slider.value = next.toFixed(1);
+            // Keep slider fill in sync
+            slider.style.setProperty('--vol', (next * 100) + '%');
+            // Update video volume and icon
+            changeVolume(video, next, muteBtnId);
         }
 
         function toggleFullscreen() {
@@ -730,6 +762,12 @@
             if (event.key === ' ') {
                 event.preventDefault();
                 togglePlay(video1, 'playBtn1');
+                return;
+            }
+            // Toggle fullscreen with "F"
+            if (event.key === 'f' || event.key === 'F') {
+                event.preventDefault();
+                toggleFullscreen();
                 return;
             }
             if (event.key === 'ArrowLeft') {
