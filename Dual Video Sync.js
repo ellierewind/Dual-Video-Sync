@@ -818,6 +818,18 @@
                 return;
             }
 
+            // '.' next frame, ',' previous frame (no Shift)
+            if (!event.shiftKey && (event.code === 'Period' || event.key === '.')) {
+                event.preventDefault();
+                stepFrame(+1);
+                return;
+            }
+            if (!event.shiftKey && (event.code === 'Comma' || event.key === ',')) {
+                event.preventDefault();
+                stepFrame(-1);
+                return;
+            }
+
             // Shift + '.' increase speed, Shift + ',' decrease speed
             if (event.shiftKey && (event.code === 'Period' || event.key === '.' || event.key === '>')) {
                 event.preventDefault();
@@ -937,6 +949,15 @@
                     lastSyncTime = Date.now(); // Update last sync time to prevent immediate re-sync
                 }
             }
+        }
+
+        // Frame stepping (approximate). Uses 1/30s per frame.
+        const FRAME_STEP_SECONDS = 1 / 30;
+        function stepFrame(direction) {
+            try { video1.pause(); } catch {}
+            try { video2.pause(); } catch {}
+            const step = (direction >= 0 ? 1 : -1) * FRAME_STEP_SECONDS;
+            skipTime(step);
         }
 
         function initializeDragging() {
