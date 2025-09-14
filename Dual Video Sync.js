@@ -439,6 +439,37 @@
             lsSet(LS_KEYS.rate, String(rate));
         }
 
+        // Helpers to bump playback speed among available select options
+        function getAvailableRates() {
+            const s1 = document.getElementById('speedSelect1');
+            if (!s1) return [1, 1.25, 1.5, 1.75, 2];
+            const vals = Array.from(s1.options)
+                .map(o => parseFloat(o.value))
+                .filter(v => Number.isFinite(v));
+            // Ensure sorted unique
+            const set = Array.from(new Set(vals)).sort((a,b)=>a-b);
+            return set.length ? set : [1, 1.25, 1.5, 1.75, 2];
+        }
+
+        function bumpSpeed(dir) {
+            const rates = getAvailableRates();
+            const current = Number.isFinite(globalPlaybackRate) ? globalPlaybackRate : 1;
+            let idx = rates.findIndex(r => Math.abs(r - current) < 1e-6);
+            if (idx === -1) {
+                // find insertion point
+                let firstGreater = rates.findIndex(r => r > current);
+                if (firstGreater === -1) {
+                    idx = rates.length - 1;
+                } else {
+                    idx = firstGreater;
+                }
+            }
+            let nextIdx = idx + (dir > 0 ? 1 : -1);
+            nextIdx = Math.max(0, Math.min(rates.length - 1, nextIdx));
+            const nextRate = rates[nextIdx];
+            changeSpeed(video1, nextRate);
+        }
+
         function updateProgress(video, progressBarId, timeDisplayId) {
             const progressBar = document.getElementById(progressBarId);
             const timeDisplay = document.getElementById(timeDisplayId);
@@ -764,6 +795,12 @@
                 togglePlay(video1, 'playBtn1');
                 return;
             }
+            // Enter: Set Sync Point (only before sync is set)
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                if (!isSynced) setSyncPoint();
+                return;
+            }
             // Toggle fullscreen with "F"
             if (event.key === 'f' || event.key === 'F') {
                 event.preventDefault();
@@ -778,6 +815,18 @@
             if (event.key === 'ArrowRight') {
                 event.preventDefault();
                 skipTime(5);
+                return;
+            }
+
+            // Shift + '.' increase speed, Shift + ',' decrease speed
+            if (event.shiftKey && (event.code === 'Period' || event.key === '.' || event.key === '>')) {
+                event.preventDefault();
+                bumpSpeed(+1);
+                return;
+            }
+            if (event.shiftKey && (event.code === 'Comma' || event.key === ',' || event.key === '<')) {
+                event.preventDefault();
+                bumpSpeed(-1);
                 return;
             }
 
