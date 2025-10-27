@@ -511,40 +511,49 @@
         }
 
         function parseSRT(srtContent) {
+            if (!srtContent || typeof srtContent !== 'string') return [];
+            // Normalize newlines and strip BOM if present
+            const norm = srtContent.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
+            const blocks = norm.trim().split(/\n\s*\n+/);
             const subtitles = [];
-            const blocks = srtContent.trim().split(/\n\s*\n/);
-            
-            blocks.forEach(block => {
-                const lines = block.trim().split('\n');
-                if (lines.length >= 3) {
-                    // Skip the sequence number (first line)
-                    const timeString = lines[1];
-                    // Get all lines after the timestamp as subtitle text
-                    const text = lines.slice(2).join('\n').trim();
-                    
-                    // Parse time format: 00:00:20,000 --> 00:00:24,400
-                    const timeMatch = timeString.match(/(\d{2}):(\d{2}):(\d{2}),(\d{3})\s*--\>\s*(\d{2}):(\d{2}):(\d{2}),(\d{3})/);
-                    
-                    if (timeMatch && text) {
-                        const startTime = parseInt(timeMatch[1]) * 3600 + 
-                                         parseInt(timeMatch[2]) * 60 + 
-                                         parseInt(timeMatch[3]) + 
-                                         parseInt(timeMatch[4]) / 1000;
-                        
-                        const endTime = parseInt(timeMatch[5]) * 3600 + 
-                                       parseInt(timeMatch[6]) * 60 + 
-                                       parseInt(timeMatch[7]) + 
-                                       parseInt(timeMatch[8]) / 1000;
-                        
-                        subtitles.push({
-                            start: startTime,
-                            end: endTime,
-                            text: text
-                        });
-                    }
+
+            const TIME_RE = /^(\s*)(\d{1,2}):(\d{1,2}):(\d{1,2})[\.,](\d{1,3})\s*--\>\s*(\d{1,2}):(\d{1,2}):(\d{1,2})[\.,](\d{1,3})(?:.*)$/;
+            function toSecs(h, m, s, ms) {
+                const H = parseInt(h, 10) || 0;
+                const M = parseInt(m, 10) || 0;
+                const S = parseInt(s, 10) || 0;
+                let MS = String(ms || '0');
+                if (MS.length === 1) MS = MS + '00';
+                else if (MS.length === 2) MS = MS + '0';
+                return H * 3600 + M * 60 + S + (parseInt(MS, 10) || 0) / 1000;
+            }
+
+            for (const rawBlock of blocks) {
+                const lines = rawBlock.split('\n').map(l => l.replace(/\s+$/,'')).filter(l => l.length || true);
+                if (lines.length === 0) continue;
+
+                // Find the time line (skip optional sequence number)
+                let timeIdx = -1;
+                for (let i = 0; i < Math.min(lines.length, 4); i++) {
+                    if (TIME_RE.test(lines[i])) { timeIdx = i; break; }
                 }
-            });
-            
+                if (timeIdx === -1) continue; // Not a valid block
+
+                const m = lines[timeIdx].match(TIME_RE);
+                if (!m) continue;
+                const start = toSecs(m[2], m[3], m[4], m[5]);
+                const end   = toSecs(m[6], m[7], m[8], m[9]);
+
+                // Remaining lines form the text
+                let text = lines.slice(timeIdx + 1).join('\n').trim();
+                if (!text) continue;
+
+                // Handle SRT-escaped line breaks sometimes appearing as \N
+                text = text.replace(/\\N/g, '\n');
+
+                subtitles.push({ start, end, text });
+            }
+
             return subtitles;
         }
 
@@ -570,6 +579,42 @@
             }
         }
 
+        // Convert SRT text to safe HTML allowing common tags: <i>, <b>, <u>, <s>, <br>, <font color>
+        function srtTextToHtml(text) {
+            if (!text) return '';
+            // Escape all HTML first
+            let escaped = text
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
+            // Allow a tiny whitelist of tags: i, b, u, s, br (no attributes)
+            escaped = escaped
+                .replace(/&lt;(i|b|u|s)&gt;/gi, '<$1>')
+                .replace(/&lt;\/(i|b|u|s)&gt;/gi, '</$1>')
+                .replace(/&lt;br\s*\/?&gt;/gi, '<br>');
+
+            // Support <font color="..."> by converting to <span style="color:...">
+            const namedColors = new Set(['white','black','red','green','blue','yellow','cyan','magenta','lime','gray','grey','orange','pink','purple','aqua','fuchsia','teal','navy','maroon','olive','silver','gold']);
+            function sanitizeColor(val){
+                if (!val) return null;
+                const v = String(val).trim().toLowerCase();
+                if (/^#([0-9a-f]{3}|[0-9a-f]{6})$/i.test(v)) return v;
+                if (namedColors.has(v)) return v;
+                return null;
+            }
+            escaped = escaped.replace(/&lt;font\b[^&]*?color\s*=\s*(?:"([^"]+)"|'([^']+)'|([^'"\s>&]+))[^&]*?&gt;/gi, function(_m, c1, c2, c3){
+                const raw = c1 || c2 || c3;
+                const col = sanitizeColor(raw);
+                return col ? `<span style="color:${col}">` : '<span>';
+            });
+            escaped = escaped.replace(/&lt;\/font&gt;/gi, '</span>');
+
+            // Convert SRT newlines and \N to <br>
+            escaped = escaped.replace(/\\N/g, '<br>');
+            // Convert newlines to <br>
+            return escaped.replace(/\r?\n/g, '<br>');
+        }
+
         function updateSubtitles(playerNum, currentTime) {
             const subtitles = playerNum === 1 ? subtitles1 : subtitles2;
             const enabled = playerNum === 1 ? subtitlesEnabled1 : subtitlesEnabled2;
@@ -587,7 +632,8 @@
             );
             
             if (currentSubtitle) {
-                display.textContent = currentSubtitle.text;
+                // Safely render minimal SRT formatting (<i>, <b>, <u>, line breaks)
+                display.innerHTML = srtTextToHtml(currentSubtitle.text);
                 display.style.display = 'block';
             } else {
                 display.style.display = 'none';
