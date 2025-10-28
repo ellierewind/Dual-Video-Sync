@@ -20,7 +20,14 @@
         const LS_KEYS = {
             rate: 'dvs:rate',
             overlayGeom: 'dvs:overlay:geom',
-            mainTf: 'dvs:main:tf'
+            mainTf: 'dvs:main:tf',
+            subtitleFont1: 'dvs:subtitle:font:1',
+            subtitleFont2: 'dvs:subtitle:font:2'
+        };
+
+        const FONT_SIZE_DEFAULTS = {
+            '1': '16',
+            '2': '64'
         };
 
         function lsGet(key) {
@@ -93,6 +100,8 @@
             // Settings dropdowns: open/close + actions
             setupDropdown('1');
             setupDropdown('2');
+            setupFontSizeControl('1');
+            setupFontSizeControl('2');
 
             // No CC buttons; subtitles default enabled
 
@@ -303,6 +312,42 @@
             }
 
             document.addEventListener('click', closeAll);
+        }
+
+        function applySubtitleFontSize(id, sizePx) {
+            const displayId = id === '1' ? 'subtitle1Display' : 'subtitle2Display';
+            const display = document.getElementById(displayId);
+            if (!display) return;
+
+            const value = parseFloat(sizePx);
+            if (Number.isFinite(value) && value > 0) {
+                display.style.fontSize = value + 'px';
+            }
+        }
+
+        function setupFontSizeControl(id) {
+            const select = document.getElementById(`fontSizeSelect${id}`);
+            if (!select) return;
+
+            const key = id === '1' ? LS_KEYS.subtitleFont1 : LS_KEYS.subtitleFont2;
+            const defaultValueRaw = FONT_SIZE_DEFAULTS[id];
+            const optionValues = Array.from(select.options).map(opt => opt.value);
+            const fallback = optionValues.includes(defaultValueRaw) ? defaultValueRaw : (optionValues[0] || '');
+            const savedValue = key ? lsGet(key) : null;
+            const initialValue = (savedValue && optionValues.includes(savedValue)) ? savedValue : fallback;
+
+            if (initialValue) {
+                select.value = initialValue;
+                applySubtitleFontSize(id, initialValue);
+            }
+
+            select.addEventListener('change', (e) => {
+                const value = e.target.value;
+                applySubtitleFontSize(id, value);
+                if (key) lsSet(key, value);
+            });
+
+            select.addEventListener('click', (e) => e.stopPropagation());
         }
 
         // Hide controls and cursor when the mouse leaves the page,
