@@ -275,8 +275,7 @@ function initializePlayers() {
 }
 
 // Wheel-based volume control for a specific player
-// Finer wheel increments; sliders now step 0.01
-const VOLUME_WHEEL_STEP = 0.02; // per notch
+// Finer wheel increments; sliders now step 0.001
 function handleWheelVolume(event, video, sliderId, muteBtnId) {
     // Avoid interfering with pinch-zoom or modified scrolls
     if (event.ctrlKey || event.shiftKey || event.altKey || event.metaKey) return;
@@ -285,13 +284,21 @@ function handleWheelVolume(event, video, sliderId, muteBtnId) {
     if (!slider) return;
     const dir = event.deltaY < 0 ? 1 : -1; // up increases, down decreases
     const current = Math.max(0, Math.min(1, parseFloat(slider.value)));
-    // Snap to 0.01 steps to align with slider
-    let next = current + dir * VOLUME_WHEEL_STEP;
-    next = Math.max(0, Math.min(1, Math.round(next * 100) / 100));
+
+    // Dynamic step size: finer control at low volume
+    // If current volume is < 0.1, use very fine steps (0.002)
+    // Otherwise use fine steps (0.01)
+    const step = current < 0.1 ? 0.002 : 0.01;
+    
+    let next = current + dir * step;
+    
+    // Snap to 3 decimal places to align with slider step of 0.001
+    next = Math.max(0, Math.min(1, Math.round(next * 1000) / 1000));
+    
     if (next === current) return;
     // Changing volume should unmute
     if (video.muted && next > 0) video.muted = false;
-    slider.value = next.toFixed(2);
+    slider.value = next.toFixed(3);
     // Keep slider fill in sync
     slider.style.setProperty('--vol', (next * 100) + '%');
     // Update video volume and icon
