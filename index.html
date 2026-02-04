@@ -4,8 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dual Video Sync</title>
-    <link rel="icon" type="image/png" href="icon128.png">
-    <link rel="stylesheet" href="Dual Video Sync.css">
+    <link rel="icon" type="image/png" href="icons/icon128.png">
+    <link rel="stylesheet" href="styles.css">
 </head>
 <body>
     <!-- Main Video Player -->
@@ -41,7 +41,7 @@
                     </div>
                     <div class="control-group">
                         <button class="control-btn" id="swapBtn" title="Swap Videos">🔄</button>
-                        <label class="file-label" for="file1">Choose Video 1</label>
+                        <label class="file-label" id="chooseVideo1Label" for="file1">Choose Video 1</label>
                         <input type="file" id="file1" class="file-input">
                         <input type="file" id="subtitle1" class="file-input" accept=".srt">
                         <div class="dropdown" id="settings1">
@@ -87,7 +87,7 @@
                 </div>
                 <div style="display: flex; gap: 5px; align-items: center;">
                     <button class="overlay-btn" id="swapBtn2" title="Swap Videos">🔄</button>
-                    <label class="file-label" for="file2" style="font-size: 10px; padding: 4px 8px;">Choose Video 2</label>
+                    <label class="file-label" id="chooseVideo2Label" for="file2" style="font-size: 10px; padding: 4px 8px;">Choose Video 2</label>
                     <div class="dropdown" id="settings2">
                         <button class="overlay-btn dropdown-toggle" id="settingsToggle2" title="More options">⋯</button>
                         <div class="dropdown-menu">
@@ -120,8 +120,6 @@
     </div>
 
     
-    <script src="Dual Video Sync.js"></script>
+    <script src="app.js"></script>
 </body>
 </html>
-
-

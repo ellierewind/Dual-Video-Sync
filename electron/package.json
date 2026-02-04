@@ -1,0 +1,58 @@
+{
+  "name": "dual-video-sync",
+  "version": "1.0.0",
+  "description": "Electron app for synchronized dual local video playback.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist:win": "electron-builder --win nsis"
+  },
+  "build": {
+    "appId": "com.ellie.dualvideosync",
+    "productName": "Dual Video Sync",
+    "files": [
+      "**/*",
+      "!dist/**",
+      "!node_modules/.cache/**"
+    ],
+    "directories": {
+      "buildResources": ".",
+      "output": "dist"
+    },
+    "extraResources": [
+      {
+        "from": "../index.html",
+        "to": "web/index.html"
+      },
+      {
+        "from": "../styles.css",
+        "to": "web/styles.css"
+      },
+      {
+        "from": "../app.js",
+        "to": "web/app.js"
+      },
+      {
+        "from": "../icons",
+        "to": "web/icons"
+      }
+    ],
+    "win": {
+      "icon": "../icons/app.ico",
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "../icons/app.ico",
+      "uninstallerIcon": "../icons/app.ico",
+      "installerHeaderIcon": "../icons/app.ico"
+    }
+  },
+  "devDependencies": {
+    "electron": "^40.1.0",
+    "electron-builder": "^26.7.0"
+  }
+}

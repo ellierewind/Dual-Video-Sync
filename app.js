@@ -1,3 +1,4 @@
+(() => {
 // Global variables
 let video1 = document.getElementById('video1');
 let video2 = document.getElementById('video2');
@@ -17,6 +18,14 @@ let subtitlesEnabled2 = true;
 let globalPlaybackRate = 1;
 // Track which video is controlled by keyboard shortcuts (1 or 2)
 let activeVideo = 1;
+const electronAPI = (typeof window !== 'undefined' && window.electronAPI) ? window.electronAPI : null;
+const VIDEO_PLAYER_IDS = {
+    video1: 'video1',
+    video2: 'video2'
+};
+let lastVideoPath1 = null;
+let lastVideoPath2 = null;
+let electronZoomFactor = 1;
 
 // ===== Persistence (localStorage) =====
 const LS_KEYS = {
@@ -339,22 +348,54 @@ function openProfileMenu() {
             }
         });
 
-        const loadBtn = document.createElement('button');
-        loadBtn.type = 'button';
-        loadBtn.textContent = hasState ? 'Load' : 'Empty';
-        loadBtn.disabled = !hasState;
-        loadBtn.style.cssText = `
-            border: 1px solid ${hasState ? 'rgba(120, 255, 180, 0.75)' : 'rgba(255, 255, 255, 0.2)'};
-            background: ${hasState ? 'rgba(46, 204, 113, 0.25)' : 'rgba(255, 255, 255, 0.05)'};
-            color: ${hasState ? '#d8ffe8' : 'rgba(255, 255, 255, 0.5)'};
+        const actions = document.createElement('div');
+        actions.style.cssText = `
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        `;
+
+        const saveBtn = document.createElement('button');
+        saveBtn.type = 'button';
+        saveBtn.textContent = 'Save';
+        saveBtn.style.cssText = `
+            border: 1px solid rgba(120, 170, 255, 0.75);
+            background: rgba(84, 125, 255, 0.25);
+            color: #dbe7ff;
             border-radius: 8px;
-            width: 78px;
-            padding: 8px 12px;
-            cursor: ${hasState ? 'pointer' : 'default'};
+            width: 72px;
+            padding: 8px 10px;
+            cursor: pointer;
             white-space: nowrap;
             text-align: center;
             box-sizing: border-box;
         `;
+
+        const loadBtn = document.createElement('button');
+        loadBtn.type = 'button';
+        loadBtn.style.cssText = `
+            border-radius: 8px;
+            width: 72px;
+            padding: 8px 10px;
+            white-space: nowrap;
+            text-align: center;
+            box-sizing: border-box;
+        `;
+        const setLoadState = (enabled) => {
+            loadBtn.textContent = enabled ? 'Load' : 'Empty';
+            loadBtn.disabled = !enabled;
+            loadBtn.style.border = `1px solid ${enabled ? 'rgba(120, 255, 180, 0.75)' : 'rgba(255, 255, 255, 0.2)'}`;
+            loadBtn.style.background = enabled ? 'rgba(46, 204, 113, 0.25)' : 'rgba(255, 255, 255, 0.05)';
+            loadBtn.style.color = enabled ? '#d8ffe8' : 'rgba(255, 255, 255, 0.5)';
+            loadBtn.style.cursor = enabled ? 'pointer' : 'default';
+        };
+        setLoadState(hasState);
+
+        saveBtn.addEventListener('click', () => {
+            saveNameNow();
+            saveProfile(slot);
+            setLoadState(true);
+        });
         loadBtn.addEventListener('click', () => {
             loadProfile(slot);
             closeProfileMenu();
@@ -362,7 +403,9 @@ function openProfileMenu() {
 
         row.appendChild(slotLabel);
         row.appendChild(nameInput);
-        row.appendChild(loadBtn);
+        actions.appendChild(saveBtn);
+        actions.appendChild(loadBtn);
+        row.appendChild(actions);
         body.appendChild(row);
     }
 
@@ -449,10 +492,11 @@ function recenter() {
 }
 
 // Initialize players
-function initializePlayers() {
+async function initializePlayers() {
     // File inputs
-    document.getElementById('file1').addEventListener('change', (e) => loadVideo(e, video1));
-    document.getElementById('file2').addEventListener('change', (e) => loadVideo(e, video2));
+    document.getElementById('file1').addEventListener('change', (e) => loadVideo(e, video1, VIDEO_PLAYER_IDS.video1));
+    document.getElementById('file2').addEventListener('change', (e) => loadVideo(e, video2, VIDEO_PLAYER_IDS.video2));
+    setupElectronFilePickers();
 
     // Subtitle inputs
     document.getElementById('subtitle1').addEventListener('change', (e) => loadSubtitle(e, 1));
@@ -579,6 +623,7 @@ function initializePlayers() {
 
     // Inactivity handling (hide controls and cursor)
     setupInactivityHide();
+    setupCtrlWheelZoom();
 
     // Restore saved transforms (if any), then ensure they are applied
     (function restoreTf() {
@@ -615,6 +660,41 @@ function initializePlayers() {
 
     // Initialize fullscreen button state
     updateFullscreenButtons();
+
+    // Restore last selected local files (Electron only)
+    await restoreLastPlayedVideos();
+}
+
+function setupCtrlWheelZoom() {
+    if (!electronAPI) return;
+
+    electronAPI.getZoomFactor()
+        .then((v) => {
+            const n = Number(v);
+            if (Number.isFinite(n)) electronZoomFactor = n;
+        })
+        .catch(() => { });
+
+    document.addEventListener('wheel', (event) => {
+        if (!event.ctrlKey) return;
+        event.preventDefault();
+
+        const step = event.deltaY < 0 ? 1.1 : (1 / 1.1);
+        electronZoomFactor = Math.max(0.25, Math.min(3, electronZoomFactor * step));
+        electronAPI.setZoomFactor(electronZoomFactor).catch(() => { });
+    }, { passive: false });
+}
+
+function adjustElectronZoom(multiplier) {
+    if (!electronAPI) return;
+    electronZoomFactor = Math.max(0.25, Math.min(3, electronZoomFactor * multiplier));
+    electronAPI.setZoomFactor(electronZoomFactor).catch(() => { });
+}
+
+function resetElectronZoom() {
+    if (!electronAPI) return;
+    electronZoomFactor = 1;
+    electronAPI.setZoomFactor(1).catch(() => { });
 }
 
 // Wheel-based volume control for a specific player
@@ -737,15 +817,77 @@ function setupInactivityHide() {
     resetTimer();
 }
 
-function loadVideo(event, video) {
+function setupElectronFilePickers() {
+    if (!electronAPI) return;
+
+    const video1Label = document.getElementById('chooseVideo1Label');
+    const video2Label = document.getElementById('chooseVideo2Label');
+
+    if (video1Label) {
+        video1Label.addEventListener('click', async (event) => {
+            event.preventDefault();
+            await openVideoFromDialog(video1, VIDEO_PLAYER_IDS.video1);
+        });
+    }
+
+    if (video2Label) {
+        video2Label.addEventListener('click', async (event) => {
+            event.preventDefault();
+            await openVideoFromDialog(video2, VIDEO_PLAYER_IDS.video2);
+        });
+    }
+}
+
+async function openVideoFromDialog(video, playerId) {
+    if (!electronAPI) return;
+    try {
+        const selected = await electronAPI.openVideoFile();
+        if (!selected || !selected.path || !selected.fileUrl) return;
+        await loadVideoFromSource(video, selected.fileUrl, playerId, selected.path);
+    } catch {
+        // no-op
+    }
+}
+
+async function restoreLastPlayedVideos() {
+    if (!electronAPI) return;
+    try {
+        const [last1, last2] = await Promise.all([
+            electronAPI.getLastVideo(VIDEO_PLAYER_IDS.video1),
+            electronAPI.getLastVideo(VIDEO_PLAYER_IDS.video2)
+        ]);
+
+        if (last1 && last1.fileUrl) {
+            await loadVideoFromSource(video1, last1.fileUrl, VIDEO_PLAYER_IDS.video1, last1.path, { persist: false });
+        }
+        if (last2 && last2.fileUrl) {
+            await loadVideoFromSource(video2, last2.fileUrl, VIDEO_PLAYER_IDS.video2, last2.path, { persist: false });
+        }
+    } catch {
+        // no-op: app still works without restoring prior files
+    }
+}
+
+async function loadVideoFromSource(video, src, playerId, localPath, options) {
+    if (!video || !src) return;
+    const opts = options || {};
+    if (playerId === VIDEO_PLAYER_IDS.video1) lastVideoPath1 = localPath || null;
+    if (playerId === VIDEO_PLAYER_IDS.video2) lastVideoPath2 = localPath || null;
+    video.src = src;
+    video.load();
+    try { video.playbackRate = globalPlaybackRate; } catch { }
+    video.addEventListener('loadedmetadata', () => { try { video.playbackRate = globalPlaybackRate; } catch { } }, { once: true });
+
+    if (opts.persist !== false && electronAPI && playerId && localPath) {
+        try { await electronAPI.setLastVideo(playerId, localPath); } catch { }
+    }
+}
+
+function loadVideo(event, video, playerId) {
     const file = event.target.files[0];
     if (file) {
         const url = URL.createObjectURL(file);
-        video.src = url;
-        video.load();
-        // Apply the user's chosen rate immediately and on metadata
-        try { video.playbackRate = globalPlaybackRate; } catch { }
-        video.addEventListener('loadedmetadata', () => { try { video.playbackRate = globalPlaybackRate; } catch { } }, { once: true });
+        loadVideoFromSource(video, url, playerId, file.path || null);
     }
 }
 
@@ -1064,10 +1206,18 @@ function swapVideos() {
     // Store transform states
     const tempTf1 = { ...tf1 };
     const tempTf2 = { ...tf2 };
+    const tempPath1 = lastVideoPath1;
+    const tempPath2 = lastVideoPath2;
 
     // Swap video sources
     video1.src = video2Src;
     video2.src = video1Src;
+    lastVideoPath1 = tempPath2;
+    lastVideoPath2 = tempPath1;
+    if (electronAPI) {
+        if (lastVideoPath1) electronAPI.setLastVideo(VIDEO_PLAYER_IDS.video1, lastVideoPath1).catch(() => { });
+        if (lastVideoPath2) electronAPI.setLastVideo(VIDEO_PLAYER_IDS.video2, lastVideoPath2).catch(() => { });
+    }
 
     // Wait for videos to load then restore states
     Promise.all([
@@ -1288,6 +1438,26 @@ function handleKeyboard(event) {
     if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
 
     if (isProfileMenuOpen()) return;
+
+    // Electron zoom shortcuts (mirror browser behavior)
+    if ((event.ctrlKey || event.metaKey) && !event.altKey) {
+        const key = String(event.key || '');
+        if (key === '+' || key === '=') {
+            event.preventDefault();
+            adjustElectronZoom(1.1);
+            return;
+        }
+        if (key === '-') {
+            event.preventDefault();
+            adjustElectronZoom(1 / 1.1);
+            return;
+        }
+        if (key === '0') {
+            event.preventDefault();
+            resetElectronZoom();
+            return;
+        }
+    }
 
     // Profiles:
     // Ctrl+Alt+Shift+Number => save profile
@@ -1690,3 +1860,4 @@ function toggleOverlay() {
 
 // Initialize everything when page loads
 document.addEventListener('DOMContentLoaded', initializePlayers);
+})();
