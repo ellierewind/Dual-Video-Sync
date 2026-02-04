@@ -16,7 +16,8 @@ A local web application for playing and synchronizing two video files simultaneo
 -   **Overlay Mode**: Secondary video can be resized, moved, and overlayed on the primary video.
 -   **Subtitle Support**: Load `.srt` files for both videos with basic formatting support.
 -   **Transform Controls**: (Keyboard shortcuts) Zoom, stretch, flip, and rotate videos.
--   **Persistence**: Saves playback rate and overlay geometry between sessions.
+-   **Profiles**: Save/load multiple layout profiles (video transforms + overlay position/size).
+-   **Persistence**: Saves playback rate, transforms, overlay geometry, and profiles between sessions.
 
 ## Usage
 
@@ -30,3 +31,6 @@ A local web application for playing and synchronizing two video files simultaneo
     -   Use the on-screen controls for playback, volume, and speed.
     -   Mouse wheel over a video player adjusts its volume.
     -   Double-click the main player to toggle fullscreen.
+    -   `Ctrl + Alt + Shift + <number>` saves a profile slot (`0-9`).
+    -   `Ctrl + Shift + <number>` loads that profile slot (`0-9`).
+    -   `Ctrl + Shift + \`` (same key as `~`) opens/closes the profile menu to load profiles and rename them.

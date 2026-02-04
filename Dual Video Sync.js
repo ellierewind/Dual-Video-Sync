@@ -23,7 +23,8 @@ const LS_KEYS = {
     rate: 'dvs:rate',
     overlayGeom: 'dvs:overlay:geom',
     video1Tf: 'dvs:video1:tf',
-    video2Tf: 'dvs:video2:tf'
+    video2Tf: 'dvs:video2:tf',
+    profiles: 'dvs:profiles'
 };
 
 function lsGet(key) {
@@ -31,6 +32,348 @@ function lsGet(key) {
 }
 function lsSet(key, val) {
     try { window.localStorage.setItem(key, val); } catch { }
+}
+
+function cloneTf(tf) {
+    return {
+        zoom: Number(tf.zoom),
+        stretchX: Number(tf.stretchX),
+        stretchY: Number(tf.stretchY),
+        flipX: Number(tf.flipX),
+        flipY: Number(tf.flipY),
+        rot: Number(tf.rot),
+        tx: Number(tf.tx),
+        ty: Number(tf.ty)
+    };
+}
+
+function isValidTf(tf) {
+    if (!tf || typeof tf !== 'object') return false;
+    const keys = ['zoom', 'stretchX', 'stretchY', 'flipX', 'flipY', 'rot', 'tx', 'ty'];
+    return keys.every(k => typeof tf[k] === 'number' && Number.isFinite(tf[k]));
+}
+
+function getCurrentOverlayGeom(overlayEl) {
+    const overlay = overlayEl || document.getElementById('overlayPlayer');
+    if (!overlay) return null;
+    try {
+        const rect = overlay.getBoundingClientRect();
+        return {
+            left: Math.round(rect.left),
+            top: Math.round(rect.top),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height)
+        };
+    } catch {
+        return null;
+    }
+}
+
+function applyOverlayGeom(geom) {
+    const overlay = document.getElementById('overlayPlayer');
+    if (!overlay || !geom) return false;
+    const valid = v => typeof v === 'number' && Number.isFinite(v) && v >= 0;
+    if (!valid(geom.left) || !valid(geom.top) || !valid(geom.width) || !valid(geom.height)) return false;
+    overlay.style.left = geom.left + 'px';
+    overlay.style.top = geom.top + 'px';
+    overlay.style.width = geom.width + 'px';
+    overlay.style.height = geom.height + 'px';
+    overlay.style.right = 'auto';
+    return true;
+}
+
+function getProfileSlotFromEvent(event) {
+    const code = String(event.code || '');
+    if (code.startsWith('Digit') || code.startsWith('Numpad')) {
+        const n = parseInt(code.replace('Digit', '').replace('Numpad', ''), 10);
+        if (Number.isInteger(n) && n >= 0 && n <= 9) return n;
+    }
+    if (/^[0-9]$/.test(event.key)) return parseInt(event.key, 10);
+    return null;
+}
+
+function readProfiles() {
+    const raw = lsGet(LS_KEYS.profiles);
+    if (!raw) return {};
+    try {
+        const parsed = JSON.parse(raw);
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+        return {};
+    }
+}
+
+function writeProfiles(profiles) {
+    lsSet(LS_KEYS.profiles, JSON.stringify(profiles || {}));
+}
+
+function normalizeProfileEntry(raw, slot) {
+    if (!raw || typeof raw !== 'object') return null;
+    const defaultName = '';
+    const explicitName = typeof raw.name === 'string' ? raw.name.trim() : '';
+
+    if (raw.state && typeof raw.state === 'object') {
+        return {
+            name: explicitName || defaultName,
+            state: raw.state
+        };
+    }
+
+    // Backward compatibility with old profile format: slot => state
+    if (isValidTf(raw.tf1) && isValidTf(raw.tf2)) {
+        return {
+            name: explicitName || defaultName,
+            state: raw
+        };
+    }
+
+    return {
+        name: explicitName || defaultName,
+        state: null
+    };
+}
+
+function buildCurrentProfileState() {
+    return {
+        tf1: cloneTf(tf1),
+        tf2: cloneTf(tf2),
+        overlayGeom: getCurrentOverlayGeom(),
+        activeVideo: activeVideo
+    };
+}
+
+function applyProfileState(state) {
+    if (!state || typeof state !== 'object') return false;
+    if (!isValidTf(state.tf1) || !isValidTf(state.tf2)) return false;
+    tf1 = cloneTf(state.tf1);
+    tf2 = cloneTf(state.tf2);
+    applyTransform(1);
+    applyTransform(2);
+
+    if (state.overlayGeom) {
+        if (applyOverlayGeom(state.overlayGeom)) {
+            lsSet(LS_KEYS.overlayGeom, JSON.stringify(state.overlayGeom));
+        }
+    }
+
+    if (state.activeVideo === 1 || state.activeVideo === 2) {
+        activeVideo = state.activeVideo;
+    }
+
+    return true;
+}
+
+function saveProfile(slot) {
+    const profiles = readProfiles();
+    const existing = normalizeProfileEntry(profiles[String(slot)], slot);
+    const name = existing?.name || '';
+    profiles[String(slot)] = {
+        name,
+        state: buildCurrentProfileState()
+    };
+    writeProfiles(profiles);
+    showControlNotification(`Saved Profile ${name}`);
+}
+
+function loadProfile(slot) {
+    const profiles = readProfiles();
+    const entry = normalizeProfileEntry(profiles[String(slot)], slot);
+    const state = entry?.state;
+    if (!state) {
+        showControlNotification(`Profile ${slot} is empty`);
+        return;
+    }
+    if (!applyProfileState(state)) {
+        showControlNotification(`Profile ${slot} is invalid`);
+        return;
+    }
+    showControlNotification(`Loaded ${entry.name ? entry.name : `Profile ${slot}`}`);
+}
+
+function renameProfile(slot, name, options) {
+    const opts = options || {};
+    const profiles = readProfiles();
+    const existing = normalizeProfileEntry(profiles[String(slot)], slot) || {
+        name: '',
+        state: null
+    };
+    const trimmed = String(name || '').trim();
+    existing.name = trimmed;
+    profiles[String(slot)] = existing;
+    writeProfiles(profiles);
+    if (opts.notify) showControlNotification(`Renamed profile ${slot}`);
+}
+
+function isProfileMenuOpen() {
+    return !!document.getElementById('profileMenuOverlay');
+}
+
+function closeProfileMenu() {
+    const overlay = document.getElementById('profileMenuOverlay');
+    if (overlay) overlay.remove();
+}
+
+function openProfileMenu() {
+    closeProfileMenu();
+
+    const overlay = document.createElement('div');
+    overlay.id = 'profileMenuOverlay';
+    overlay.style.cssText = `
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.55);
+        z-index: 12000;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+    `;
+
+    const panel = document.createElement('div');
+    panel.style.cssText = `
+        width: min(840px, 100%);
+        max-height: 85vh;
+        overflow: auto;
+        background: #151515;
+        color: #fff;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        border-radius: 12px;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
+        font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    `;
+
+    const header = document.createElement('div');
+    header.style.cssText = `
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 14px 16px;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+    `;
+    header.innerHTML = `
+        <div style="font-size: 18px; font-weight: 700;">Profiles</div>
+        <div style="font-size: 12px; opacity: 0.75;">Ctrl+Shift+\` to close</div>
+    `;
+
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.textContent = 'Close';
+    closeBtn.style.cssText = `
+        border: 1px solid rgba(255, 255, 255, 0.35);
+        background: rgba(255, 255, 255, 0.08);
+        color: #fff;
+        border-radius: 8px;
+        padding: 6px 10px;
+        cursor: pointer;
+    `;
+    closeBtn.addEventListener('click', closeProfileMenu);
+    header.appendChild(closeBtn);
+
+    const body = document.createElement('div');
+    body.style.cssText = `padding: 10px 12px 14px;`;
+    const renameTimers = new Map();
+
+    const profiles = readProfiles();
+    const slotOrder = [1, 2, 3, 4, 5, 6, 7, 8, 9, 0];
+    for (const slot of slotOrder) {
+        const entry = normalizeProfileEntry(profiles[String(slot)], slot);
+        const hasState = !!entry?.state;
+        const row = document.createElement('div');
+        row.style.cssText = `
+            display: grid;
+            grid-template-columns: 72px 1fr auto;
+            gap: 8px;
+            align-items: center;
+            padding: 8px 6px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        `;
+
+        const slotLabel = document.createElement('div');
+        slotLabel.textContent = `${slot}`;
+        slotLabel.style.cssText = `
+            font-weight: 700;
+            font-size: 16px;
+            text-align: center;
+            border: 1px solid rgba(255, 255, 255, 0.25);
+            border-radius: 8px;
+            padding: 8px 0;
+            background: rgba(255, 255, 255, 0.05);
+        `;
+
+        const nameInput = document.createElement('input');
+        nameInput.type = 'text';
+        nameInput.value = entry?.name || '';
+        nameInput.placeholder = '';
+        nameInput.style.cssText = `
+            width: 100%;
+            min-width: 0;
+            background: rgba(255, 255, 255, 0.06);
+            color: #fff;
+            border: 1px solid rgba(255, 255, 255, 0.22);
+            border-radius: 8px;
+            padding: 8px 10px;
+            outline: none;
+        `;
+        const saveNameNow = () => {
+            if (renameTimers.has(slot)) {
+                clearTimeout(renameTimers.get(slot));
+                renameTimers.delete(slot);
+            }
+            renameProfile(slot, nameInput.value, { notify: false });
+        };
+        nameInput.addEventListener('input', () => {
+            if (renameTimers.has(slot)) clearTimeout(renameTimers.get(slot));
+            const t = setTimeout(() => {
+                renameProfile(slot, nameInput.value, { notify: false });
+                renameTimers.delete(slot);
+            }, 250);
+            renameTimers.set(slot, t);
+        });
+        nameInput.addEventListener('blur', saveNameNow);
+        nameInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                saveNameNow();
+                nameInput.blur();
+            }
+        });
+
+        const loadBtn = document.createElement('button');
+        loadBtn.type = 'button';
+        loadBtn.textContent = hasState ? 'Load' : 'Empty';
+        loadBtn.disabled = !hasState;
+        loadBtn.style.cssText = `
+            border: 1px solid ${hasState ? 'rgba(120, 255, 180, 0.75)' : 'rgba(255, 255, 255, 0.2)'};
+            background: ${hasState ? 'rgba(46, 204, 113, 0.25)' : 'rgba(255, 255, 255, 0.05)'};
+            color: ${hasState ? '#d8ffe8' : 'rgba(255, 255, 255, 0.5)'};
+            border-radius: 8px;
+            width: 78px;
+            padding: 8px 12px;
+            cursor: ${hasState ? 'pointer' : 'default'};
+            white-space: nowrap;
+            text-align: center;
+            box-sizing: border-box;
+        `;
+        loadBtn.addEventListener('click', () => {
+            loadProfile(slot);
+            closeProfileMenu();
+        });
+
+        row.appendChild(slotLabel);
+        row.appendChild(nameInput);
+        row.appendChild(loadBtn);
+        body.appendChild(row);
+    }
+
+    panel.appendChild(header);
+    panel.appendChild(body);
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+
+    overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) closeProfileMenu();
+    });
 }
 
 // ===== Transform state (BOTH PLAYERS) =====
@@ -927,8 +1270,41 @@ function showControlNotification(message) {
 
 // ================== Keyboard ==================
 function handleKeyboard(event) {
+    if (isProfileMenuOpen() && event.key === 'Escape') {
+        event.preventDefault();
+        closeProfileMenu();
+        return;
+    }
+
+    // Ctrl+Shift+` (same physical key as ~) toggles profile menu
+    if (event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey && event.code === 'Backquote') {
+        event.preventDefault();
+        if (isProfileMenuOpen()) closeProfileMenu();
+        else openProfileMenu();
+        return;
+    }
+
     const tag = event.target.tagName;
     if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+
+    if (isProfileMenuOpen()) return;
+
+    // Profiles:
+    // Ctrl+Alt+Shift+Number => save profile
+    // Ctrl+Shift+Number => load profile
+    const slot = getProfileSlotFromEvent(event);
+    if (slot !== null) {
+        if (event.ctrlKey && event.shiftKey && event.altKey) {
+            event.preventDefault();
+            saveProfile(slot);
+            return;
+        }
+        if (event.ctrlKey && event.shiftKey && !event.altKey) {
+            event.preventDefault();
+            loadProfile(slot);
+            return;
+        }
+    }
 
     // Space & arrows (existing behavior)
     if (event.key === ' ') {
@@ -1137,14 +1513,7 @@ function initializeDragging() {
         if (!data) return;
         try {
             const g = JSON.parse(data);
-            const valid = v => typeof v === 'number' && isFinite(v) && v >= 0;
-            if (g && valid(g.left) && valid(g.top) && valid(g.width) && valid(g.height)) {
-                overlay.style.left = g.left + 'px';
-                overlay.style.top = g.top + 'px';
-                overlay.style.width = g.width + 'px';
-                overlay.style.height = g.height + 'px';
-                overlay.style.right = 'auto';
-            }
+            applyOverlayGeom(g);
         } catch { }
     })();
 
@@ -1309,14 +1678,8 @@ function initializeDragging() {
 
 function saveOverlayGeom(overlayEl) {
     try {
-        const rect = overlayEl.getBoundingClientRect();
-        const geom = {
-            left: Math.round(rect.left),
-            top: Math.round(rect.top),
-            width: Math.round(rect.width),
-            height: Math.round(rect.height)
-        };
-        lsSet(LS_KEYS.overlayGeom, JSON.stringify(geom));
+        const geom = getCurrentOverlayGeom(overlayEl);
+        if (geom) lsSet(LS_KEYS.overlayGeom, JSON.stringify(geom));
     } catch { }
 }
 
