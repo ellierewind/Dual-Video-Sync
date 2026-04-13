@@ -11,6 +11,8 @@ A local dual-video player that can run in a browser (`index.html`) or as an Elec
     -   Play/Pause syncs across both players.
 -   **Independent & Global Controls**:
     -   Control speed (playback rate) globally or individually.
+    -   Use on-screen speed up/down buttons on both players.
+    -   Use keyboard shortcuts to step playback speed up to `4x`, with `0.1x` steps above `2x`.
     -   Volume control with fine granularity for both players.
     -   Mute/Unmute toggles.
 -   **Overlay Mode**: Secondary video can be resized, moved, and overlayed on the primary video.
@@ -36,6 +38,7 @@ A local dual-video player that can run in a browser (`index.html`) or as an Elec
     -   Click "Set Sync Point" to lock their relative timing.
 3.  **Controls**:
     -   Use the on-screen controls for playback, volume, and speed.
+    -   Use `Shift + .` and `Shift + ,` to raise or lower playback speed, up to `4x`.
     -   Mouse wheel over a video player adjusts its volume.
     -   Double-click the main player to toggle fullscreen.
     -   `Enter` sets the sync point (only when not currently synced).

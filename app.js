@@ -521,6 +521,10 @@ async function initializePlayers() {
     // Speed controls
     document.getElementById('speedSelect1').addEventListener('change', (e) => changeSpeed(video1, e.target.value));
     document.getElementById('speedSelect2').addEventListener('change', (e) => changeSpeed(video2, e.target.value));
+    document.getElementById('speedDownBtn1').addEventListener('click', () => bumpSpeed(-1));
+    document.getElementById('speedUpBtn1').addEventListener('click', () => bumpSpeed(+1));
+    document.getElementById('speedDownBtn2').addEventListener('click', () => bumpSpeed(-1));
+    document.getElementById('speedUpBtn2').addEventListener('click', () => bumpSpeed(+1));
     // Ensure both selects and playbackRates start in sync, using saved rate if available
     const s1 = document.getElementById('speedSelect1');
     const savedRateStr = lsGet(LS_KEYS.rate);
@@ -965,15 +969,40 @@ function changeSpeed(video, speed) {
     // Always keep both players and both selects in lockstep
     try { video1.playbackRate = rate; } catch { }
     try { video2.playbackRate = rate; } catch { }
-    const s1 = document.getElementById('speedSelect1');
-    const s2 = document.getElementById('speedSelect2');
-    if (s1) s1.value = String(rate);
-    if (s2) s2.value = String(rate);
+    syncSpeedSelects(rate);
     // Persist user choice
     lsSet(LS_KEYS.rate, String(rate));
 }
 
-// Helpers to bump playback speed among available select options
+function syncSpeedSelects(rate) {
+    for (const id of ['speedSelect1', 'speedSelect2']) {
+        const select = document.getElementById(id);
+        if (!select) continue;
+
+        const rates = Array.from(select.options)
+            .map(o => parseFloat(o.value))
+            .filter(v => Number.isFinite(v))
+            .sort((a, b) => a - b);
+        if (!rates.length) continue;
+
+        const exactMatch = rates.find(v => Math.abs(v - rate) < 1e-6);
+        if (exactMatch !== undefined) {
+            select.value = String(exactMatch);
+            continue;
+        }
+
+        const fallbackRates = rates.filter(v => v <= rate);
+        const fallback = fallbackRates.length ? fallbackRates[fallbackRates.length - 1] : rates[0];
+        select.value = String(fallback);
+    }
+}
+
+function formatSpeedLabel(rate) {
+    const precision = rate > 2 ? 1 : 2;
+    return `${Number(rate.toFixed(precision)).toString()}x`;
+}
+
+// Helpers to bump playback speed. Keep select-based steps through 2x, then use 0.1 up to 4x.
 function getAvailableRates() {
     const s1 = document.getElementById('speedSelect1');
     if (!s1) return [1, 1.25, 1.5, 1.75, 2];
@@ -986,25 +1015,34 @@ function getAvailableRates() {
 }
 
 function bumpSpeed(dir) {
-    const rates = getAvailableRates();
     const current = Number.isFinite(globalPlaybackRate) ? globalPlaybackRate : 1;
-    let idx = rates.findIndex(r => Math.abs(r - current) < 1e-6);
-    if (idx === -1) {
-        // find insertion point
-        let firstGreater = rates.findIndex(r => r > current);
-        if (firstGreater === -1) {
-            idx = rates.length - 1;
-        } else {
-            idx = firstGreater;
+    let nextRate = current;
+
+    if (dir > 0 && current >= 2) {
+        nextRate = Math.min(4, Math.round((current + 0.1) * 10) / 10);
+    } else if (dir < 0 && current > 2) {
+        nextRate = Math.max(2, Math.round((current - 0.1) * 10) / 10);
+    } else {
+        const rates = getAvailableRates();
+        let idx = rates.findIndex(r => Math.abs(r - current) < 1e-6);
+        if (idx === -1) {
+            // find insertion point
+            const firstGreater = rates.findIndex(r => r > current);
+            if (firstGreater === -1) {
+                idx = rates.length - 1;
+            } else {
+                idx = firstGreater;
+            }
         }
+
+        let nextIdx = idx + (dir > 0 ? 1 : -1);
+        nextIdx = Math.max(0, Math.min(rates.length - 1, nextIdx));
+        nextRate = rates[nextIdx];
     }
-    let nextIdx = idx + (dir > 0 ? 1 : -1);
-    nextIdx = Math.max(0, Math.min(rates.length - 1, nextIdx));
-    const nextRate = rates[nextIdx];
     changeSpeed(video1, nextRate);
 
     // Show visual notification of speed change
-    showControlNotification(`${nextRate}x`);
+    showControlNotification(formatSpeedLabel(nextRate));
 }
 
 function updateProgress(video, progressBarId, timeDisplayId) {
