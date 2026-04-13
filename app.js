@@ -1354,8 +1354,19 @@ function setSyncPoint() {
         // (sync status UI removed)
 
         // Hide sync controls after setting sync point
-        document.getElementById('syncControls').style.display = 'none';
+        const syncControls = document.getElementById('syncControls');
+        if (syncControls) syncControls.style.display = 'none';
     }
+}
+
+function clearSyncPoint() {
+    syncPoint1 = null;
+    syncPoint2 = null;
+    isSynced = false;
+    lastSyncTime = 0;
+
+    const syncControls = document.getElementById('syncControls');
+    if (syncControls) syncControls.style.display = '';
 }
 
 // (Clear Sync and Delay controls removed)
@@ -1434,6 +1445,13 @@ function handleKeyboard(event) {
         return;
     }
 
+    // Reload app/window
+    if (event.key === 'F5' || event.code === 'F5') {
+        event.preventDefault();
+        window.location.reload();
+        return;
+    }
+
     const tag = event.target.tagName;
     if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
 
@@ -1495,6 +1513,12 @@ function handleKeyboard(event) {
     if (event.key === "'") {
         event.preventDefault();
         swapVideos();
+        return;
+    }
+    // Ctrl+Shift+Enter: Remove sync and allow setting a new sync point
+    if (event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey && event.key === 'Enter') {
+        event.preventDefault();
+        clearSyncPoint();
         return;
     }
     // Enter: Set Sync Point (only before sync is set)

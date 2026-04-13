@@ -38,6 +38,9 @@ A local dual-video player that can run in a browser (`index.html`) or as an Elec
     -   Use the on-screen controls for playback, volume, and speed.
     -   Mouse wheel over a video player adjusts its volume.
     -   Double-click the main player to toggle fullscreen.
+    -   `Enter` sets the sync point (only when not currently synced).
+    -   `Ctrl + Shift + Enter` clears the current sync so you can set a new sync point.
+    -   `F5` reloads the app window.
     -   `Ctrl + Alt + Shift + <number>` saves a profile slot (`0-9`).
     -   `Ctrl + Shift + <number>` loads that profile slot (`0-9`).
     -   `Ctrl + Shift + \`` (same key as `~`) opens/closes the profile menu to load profiles and rename them.
