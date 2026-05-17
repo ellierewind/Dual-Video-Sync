@@ -24,6 +24,7 @@ A local dual-video player that can run in a browser (`index.html`) or as an Elec
 ## Electron-only Features
 
 -   **Remembers Last Videos** to automatically reopen the last video used in Player 1 and Player 2.
+-   **Remembers Playback Session** including the latest timestamps and sync point across app restarts.
 -   **Native file picker integration** for `Choose Video 1` / `Choose Video 2`.
 -   **Last-loaded video persistence** per player across app restarts.
 -   **Windows `.exe` packaging** via the `electron/` project.
@@ -43,6 +44,8 @@ A local dual-video player that can run in a browser (`index.html`) or as an Elec
     -   Double-click the main player to toggle fullscreen.
     -   `Enter` sets the sync point (only when not currently synced).
     -   `Ctrl + Shift + Enter` clears the current sync so you can set a new sync point.
+    -   `Ctrl + Shift + P` resets both timestamps to `0` and clears the current sync.
+    -   `Ctrl + Z` undoes the last sync/timestamp command; `Ctrl + Y` or `Ctrl + Shift + Z` redoes it.
     -   `F5` reloads the app window.
     -   `Ctrl + Alt + Shift + <number>` saves a profile slot (`0-9`).
     -   `Ctrl + Shift + <number>` loads that profile slot (`0-9`).

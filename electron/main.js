@@ -5,6 +5,10 @@ const { pathToFileURL } = require('url');
 
 const PREFS_FILE = 'prefs.json';
 const PLAYER_IDS = new Set(['video1', 'video2']);
+const PLAYER2_MODES = new Set(['overlay', 'window']);
+
+let mainWindow = null;
+let player2Window = null;
 
 function getPrefsPath() {
   return path.join(app.getPath('userData'), PREFS_FILE);
@@ -38,31 +42,174 @@ function resolveFile(filePath) {
   };
 }
 
-function createWindow() {
-  const win = new BrowserWindow({
-    width: 1440,
-    height: 900,
-    minWidth: 1100,
-    minHeight: 680,
+function resolveSubtitleFile(filePath) {
+  const selected = resolveFile(filePath);
+  if (!selected) return null;
+  try {
+    selected.content = fs.readFileSync(filePath, 'utf8');
+  } catch {
+    return null;
+  }
+  return selected;
+}
+
+function findMatchingSubtitleForVideo(videoPath) {
+  if (!videoPath || typeof videoPath !== 'string') return null;
+  const parsed = path.parse(videoPath);
+  const subtitlePath = path.join(parsed.dir, `${parsed.name}.srt`);
+  return fs.existsSync(subtitlePath) ? resolveSubtitleFile(subtitlePath) : null;
+}
+
+function normalizePlaybackSession(value) {
+  if (!value || typeof value !== 'object') return null;
+
+  const readNumberOrNull = (input) => {
+    const num = Number(input);
+    return Number.isFinite(num) ? num : null;
+  };
+
+  return {
+    video1Time: readNumberOrNull(value.video1Time),
+    video2Time: readNumberOrNull(value.video2Time),
+    syncPoint1: readNumberOrNull(value.syncPoint1),
+    syncPoint2: readNumberOrNull(value.syncPoint2),
+    isSynced: !!value.isSynced,
+    delay: Number.isFinite(Number(value.delay)) ? Number(value.delay) : 0,
+    updatedAt: Number.isFinite(Number(value.updatedAt)) ? Number(value.updatedAt) : Date.now()
+  };
+}
+
+function getIndexPath() {
+  return app.isPackaged
+    ? path.join(process.resourcesPath, 'web', 'index.html')
+    : path.join(__dirname, '..', 'index.html');
+}
+
+function getPlayer2Mode() {
+  const prefs = readPrefs();
+  return PLAYER2_MODES.has(prefs.player2Mode) ? prefs.player2Mode : 'overlay';
+}
+
+function setPlayer2Mode(mode) {
+  const nextMode = PLAYER2_MODES.has(mode) ? mode : 'overlay';
+  const prefs = readPrefs();
+  prefs.player2Mode = nextMode;
+  writePrefs(prefs);
+  return nextMode;
+}
+
+function isPlayer2WindowOpen() {
+  return !!player2Window && !player2Window.isDestroyed();
+}
+
+function getModeState() {
+  return {
+    mode: getPlayer2Mode(),
+    player2WindowOpen: isPlayer2WindowOpen()
+  };
+}
+
+function sendToWindow(win, channel, payload) {
+  if (!win || win.isDestroyed()) return;
+  try {
+    win.webContents.send(channel, payload);
+  } catch {
+    // no-op
+  }
+}
+
+function broadcastModeState() {
+  const payload = getModeState();
+  sendToWindow(mainWindow, 'player2-mode:state', payload);
+  sendToWindow(player2Window, 'player2-mode:state', payload);
+}
+
+function getSenderRole(sender) {
+  if (mainWindow && mainWindow.webContents.id === sender.id) return 'main';
+  if (player2Window && player2Window.webContents.id === sender.id) return 'player2';
+  return 'main';
+}
+
+function buildWindow(options) {
+  return new BrowserWindow({
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false
-    }
+    },
+    ...options
+  });
+}
+
+function createMainWindow() {
+  if (mainWindow && !mainWindow.isDestroyed()) return mainWindow;
+
+  mainWindow = buildWindow({
+    width: 1440,
+    height: 900,
+    minWidth: 1100,
+    minHeight: 680
   });
 
-  const indexPath = app.isPackaged
-    ? path.join(process.resourcesPath, 'web', 'index.html')
-    : path.join(__dirname, '..', 'index.html');
-  win.loadFile(indexPath);
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+
+  mainWindow.loadFile(getIndexPath());
+  return mainWindow;
+}
+
+function createPlayer2Window() {
+  if (isPlayer2WindowOpen()) {
+    player2Window.show();
+    player2Window.focus();
+    return player2Window;
+  }
+
+  player2Window = buildWindow({
+    width: 1100,
+    height: 760,
+    minWidth: 680,
+    minHeight: 420,
+    title: 'Dual Video Sync - Player 2'
+  });
+
+  player2Window.on('closed', () => {
+    player2Window = null;
+    broadcastModeState();
+  });
+
+  player2Window.loadFile(getIndexPath());
+  player2Window.webContents.once('did-finish-load', () => {
+    broadcastModeState();
+  });
+
+  return player2Window;
+}
+
+async function applyPlayer2Mode(mode) {
+  const nextMode = setPlayer2Mode(mode);
+  if (nextMode === 'window') {
+    createPlayer2Window();
+  } else if (isPlayer2WindowOpen()) {
+    player2Window.close();
+  }
+  broadcastModeState();
+  return getModeState();
 }
 
 app.whenReady().then(() => {
-  createWindow();
+  createMainWindow();
+  if (getPlayer2Mode() === 'window') {
+    createPlayer2Window();
+  }
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (!mainWindow || mainWindow.isDestroyed()) createMainWindow();
+    if (getPlayer2Mode() === 'window' && !isPlayer2WindowOpen()) {
+      createPlayer2Window();
+    }
   });
 });
 
@@ -87,6 +234,23 @@ ipcMain.handle('dialog:open-video', async () => {
   return selected || { canceled: true };
 });
 
+ipcMain.handle('dialog:open-subtitle', async () => {
+  const result = await dialog.showOpenDialog({
+    properties: ['openFile'],
+    filters: [
+      { name: 'SRT Files', extensions: ['srt'] },
+      { name: 'All Files', extensions: ['*'] }
+    ]
+  });
+
+  if (result.canceled || !result.filePaths || result.filePaths.length === 0) {
+    return { canceled: true };
+  }
+
+  const selected = resolveSubtitleFile(result.filePaths[0]);
+  return selected || { canceled: true };
+});
+
 ipcMain.handle('prefs:get-last-video', (_event, playerId) => {
   if (!PLAYER_IDS.has(playerId)) return null;
   const prefs = readPrefs();
@@ -104,6 +268,63 @@ ipcMain.handle('prefs:set-last-video', (_event, { playerId, filePath }) => {
   return true;
 });
 
+ipcMain.handle('prefs:get-last-subtitle', (_event, playerId) => {
+  if (!PLAYER_IDS.has(playerId)) return null;
+  const prefs = readPrefs();
+  const subtitles = prefs.lastSubtitles || {};
+  return resolveSubtitleFile(subtitles[playerId]) || null;
+});
+
+ipcMain.handle('prefs:set-last-subtitle', (_event, { playerId, filePath }) => {
+  if (!PLAYER_IDS.has(playerId) || typeof filePath !== 'string' || !filePath) return false;
+  const prefs = readPrefs();
+  const lastSubtitles = prefs.lastSubtitles && typeof prefs.lastSubtitles === 'object' ? prefs.lastSubtitles : {};
+  lastSubtitles[playerId] = filePath;
+  prefs.lastSubtitles = lastSubtitles;
+  writePrefs(prefs);
+  return true;
+});
+
+ipcMain.handle('subtitle:find-for-video', (_event, videoPath) => {
+  return findMatchingSubtitleForVideo(videoPath);
+});
+
+ipcMain.handle('prefs:get-playback-session', () => {
+  const prefs = readPrefs();
+  return normalizePlaybackSession(prefs.playbackSession);
+});
+
+ipcMain.handle('prefs:set-playback-session', (_event, session) => {
+  const normalized = normalizePlaybackSession(session);
+  if (!normalized) return false;
+  const prefs = readPrefs();
+  prefs.playbackSession = normalized;
+  writePrefs(prefs);
+  return true;
+});
+
+ipcMain.handle('prefs:get-player2-mode', () => getModeState());
+
+ipcMain.handle('prefs:set-player2-mode', async (_event, mode) => {
+  return applyPlayer2Mode(mode);
+});
+
+ipcMain.handle('player2-window:show', async () => {
+  if (getPlayer2Mode() !== 'window') {
+    setPlayer2Mode('window');
+  }
+  createPlayer2Window();
+  broadcastModeState();
+  return getModeState();
+});
+
+ipcMain.handle('window:get-context', (event) => {
+  return {
+    role: getSenderRole(event.sender),
+    ...getModeState()
+  };
+});
+
 ipcMain.handle('zoom:get-factor', (event) => {
   return event.sender.getZoomFactor();
 });
@@ -114,4 +335,14 @@ ipcMain.handle('zoom:set-factor', (event, factor) => {
   const clamped = Math.max(0.25, Math.min(3, next));
   event.sender.setZoomFactor(clamped);
   return clamped;
+});
+
+ipcMain.on('player:event', (event, message) => {
+  if (!message || typeof message !== 'object') return;
+  const senderRole = getSenderRole(event.sender);
+  if (senderRole === 'main') {
+    sendToWindow(player2Window, 'player:event', message);
+    return;
+  }
+  sendToWindow(mainWindow, 'player:event', message);
 });

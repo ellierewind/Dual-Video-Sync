@@ -14,6 +14,15 @@ let subtitles1 = [];
 let subtitles2 = [];
 let subtitlesEnabled1 = true;
 let subtitlesEnabled2 = true;
+let subtitleFontScale1 = 1;
+let subtitleFontScale2 = 1;
+let lastSubtitlePath1 = null;
+let lastSubtitlePath2 = null;
+const SUBTITLE_FONT_SCALE_STEP = 0.1;
+const SUBTITLE_FONT_SCALE_MIN = 0.1;
+const FRAME_RATE = 60;
+const FRAME_STEP_HOLD_DELAY_MS = 0;
+const FRAME_STEP_SEEK_TIMEOUT_MS = 900;
 // Global playback rate that persists across loads
 let globalPlaybackRate = 1;
 // Track which video is controlled by keyboard shortcuts (1 or 2)
@@ -26,6 +35,31 @@ const VIDEO_PLAYER_IDS = {
 let lastVideoPath1 = null;
 let lastVideoPath2 = null;
 let electronZoomFactor = 1;
+const WINDOW_ROLES = {
+    main: 'main',
+    player2: 'player2'
+};
+const PLAYER2_MODES = {
+    overlay: 'overlay',
+    window: 'window'
+};
+let windowRole = WINDOW_ROLES.main;
+let player2Mode = PLAYER2_MODES.overlay;
+let player2WindowOpen = false;
+let player2Ready = false;
+let pendingPlayer2Hydration = false;
+let suppressPlayer2StateBroadcast = false;
+let remotePlayer2State = createEmptyPlayer2State();
+let frameStepHoldDirection = 0;
+let frameStepHoldRunning = false;
+const frameStepHeldKeys = {
+    comma: false,
+    period: false
+};
+const HISTORY_LIMIT = 50;
+let undoStack = [];
+let redoStack = [];
+let revealPlayerControls = () => { };
 
 // ===== Persistence (localStorage) =====
 const LS_KEYS = {
@@ -33,14 +67,482 @@ const LS_KEYS = {
     overlayGeom: 'dvs:overlay:geom',
     video1Tf: 'dvs:video1:tf',
     video2Tf: 'dvs:video2:tf',
+    subtitleFontScale1: 'dvs:subtitle1:fontScale',
+    subtitleFontScale2: 'dvs:subtitle2:fontScale',
     profiles: 'dvs:profiles'
 };
+const ELECTRON_SESSION_SAVE_DELAY_MS = 700;
+let electronSessionSaveTimer = null;
 
 function lsGet(key) {
     try { return window.localStorage.getItem(key); } catch { return null; }
 }
 function lsSet(key, val) {
     try { window.localStorage.setItem(key, val); } catch { }
+}
+
+function hasVideoSource(video, fallbackPath) {
+    return !!((video && (video.currentSrc || video.src)) || fallbackPath);
+}
+
+function readPlayerTimeOrNull(video, fallbackPath) {
+    if (!hasVideoSource(video, fallbackPath)) return null;
+    return Number.isFinite(video?.currentTime) ? video.currentTime : 0;
+}
+
+function buildElectronPlaybackSession() {
+    if (!electronAPI || !isMainWindow()) return null;
+
+    const player2HasSource = isElectronWindowMode()
+        ? !!(remotePlayer2State.src || lastVideoPath2)
+        : hasVideoSource(video2, lastVideoPath2);
+
+    return {
+        video1Time: readPlayerTimeOrNull(video1, lastVideoPath1),
+        video2Time: player2HasSource ? getPlayer2Time() : null,
+        syncPoint1: Number.isFinite(syncPoint1) ? syncPoint1 : null,
+        syncPoint2: Number.isFinite(syncPoint2) ? syncPoint2 : null,
+        isSynced: !!isSynced,
+        delay: Number.isFinite(delay) ? delay : 0,
+        updatedAt: Date.now()
+    };
+}
+
+async function persistElectronPlaybackSessionNow() {
+    if (!electronAPI || !isMainWindow()) return;
+    if (electronSessionSaveTimer) {
+        clearTimeout(electronSessionSaveTimer);
+        electronSessionSaveTimer = null;
+    }
+    const session = buildElectronPlaybackSession();
+    if (!session) return;
+    try {
+        await electronAPI.setPlaybackSession(session);
+    } catch {
+        // no-op: app still works without session persistence
+    }
+}
+
+function schedulePersistElectronPlaybackSession(delayMs) {
+    if (!electronAPI || !isMainWindow()) return;
+    if (electronSessionSaveTimer) clearTimeout(electronSessionSaveTimer);
+    electronSessionSaveTimer = window.setTimeout(() => {
+        electronSessionSaveTimer = null;
+        persistElectronPlaybackSessionNow();
+    }, Number.isFinite(delayMs) ? delayMs : ELECTRON_SESSION_SAVE_DELAY_MS);
+}
+
+function waitForVideoMetadata(video, timeoutMs = 1500) {
+    if (!video) return Promise.resolve();
+    if (video.readyState >= 1) return Promise.resolve();
+
+    return new Promise((resolve) => {
+        let finished = false;
+        const done = () => {
+            if (finished) return;
+            finished = true;
+            resolve();
+        };
+        video.addEventListener('loadedmetadata', done, { once: true });
+        setTimeout(done, timeoutMs);
+    });
+}
+
+async function restoreVideoTimestamp(video, time) {
+    if (!video || !Number.isFinite(time) || !hasVideoSource(video)) return;
+    await waitForVideoMetadata(video);
+    try { video.currentTime = Math.max(0, time); } catch { }
+}
+
+async function restoreElectronPlaybackSession() {
+    if (!electronAPI || !isMainWindow()) return;
+
+    try {
+        const session = await electronAPI.getPlaybackSession();
+        if (!session || typeof session !== 'object') return;
+
+        applySyncMeta({
+            syncPoint1: session.syncPoint1,
+            syncPoint2: session.syncPoint2,
+            isSynced: session.isSynced,
+            delay: session.delay
+        });
+
+        await restoreVideoTimestamp(video1, session.video1Time);
+
+        if (isElectronWindowMode()) {
+            remotePlayer2State = mergeRemotePlayer2State({
+                currentTime: Number.isFinite(session.video2Time) ? session.video2Time : 0,
+                paused: true,
+                updatedAt: Date.now()
+            });
+            pendingPlayer2Hydration = true;
+            if (player2WindowOpen) sendHydrateToPlayer2Window();
+        } else {
+            await restoreVideoTimestamp(video2, session.video2Time);
+        }
+    } catch {
+        // no-op: app still works without restoring prior session
+    }
+}
+
+function createEmptyPlayer2State() {
+    return {
+        src: '',
+        filePath: null,
+        currentTime: 0,
+        duration: 0,
+        paused: true,
+        volume: 1,
+        muted: false,
+        playbackRate: 1,
+        updatedAt: Date.now(),
+        subtitles: [],
+        subtitlePath: null,
+        subtitlesEnabled: true,
+        subtitleFontScale: 1,
+        tf: {
+            zoom: 1,
+            stretchX: 1,
+            stretchY: 1,
+            flipX: 1,
+            flipY: 1,
+            rot: 0,
+            tx: 0,
+            ty: 0
+        }
+    };
+}
+
+function isPlayer2Window() {
+    return windowRole === WINDOW_ROLES.player2;
+}
+
+function isMainWindow() {
+    return !isPlayer2Window();
+}
+
+function isElectronShell() {
+    return !!electronAPI;
+}
+
+function isElectronWindowMode() {
+    return !!electronAPI && isMainWindow() && player2Mode === PLAYER2_MODES.window;
+}
+
+function usesLocalPlayer2() {
+    return !electronAPI || isPlayer2Window() || player2Mode === PLAYER2_MODES.overlay;
+}
+
+function mergeRemotePlayer2State(partial) {
+    if (!partial || typeof partial !== 'object') return remotePlayer2State;
+    remotePlayer2State = {
+        ...remotePlayer2State,
+        ...partial,
+        updatedAt: Number.isFinite(partial.updatedAt) ? partial.updatedAt : Date.now(),
+        subtitles: Array.isArray(partial.subtitles) ? partial.subtitles : remotePlayer2State.subtitles,
+        subtitlePath: typeof partial.subtitlePath === 'string' ? partial.subtitlePath : remotePlayer2State.subtitlePath,
+        subtitleFontScale: Number.isFinite(partial.subtitleFontScale) ? normalizeSubtitleFontScale(partial.subtitleFontScale) : remotePlayer2State.subtitleFontScale,
+        tf: isValidTf(partial.tf) ? cloneTf(partial.tf) : remotePlayer2State.tf
+    };
+    return remotePlayer2State;
+}
+
+function getPlayer2Time() {
+    if (usesLocalPlayer2()) return video2.currentTime || 0;
+    const base = remotePlayer2State.currentTime || 0;
+    if (remotePlayer2State.paused) return base;
+    const updatedAt = Number.isFinite(remotePlayer2State.updatedAt) ? remotePlayer2State.updatedAt : Date.now();
+    const playbackRate = Number.isFinite(remotePlayer2State.playbackRate) ? remotePlayer2State.playbackRate : 1;
+    const elapsed = Math.max(0, (Date.now() - updatedAt) / 1000);
+    return base + (elapsed * playbackRate);
+}
+
+function getPlayer2Duration() {
+    return usesLocalPlayer2() ? (video2.duration || 0) : (remotePlayer2State.duration || 0);
+}
+
+function isPlayer2Paused() {
+    return usesLocalPlayer2() ? !!video2.paused : !!remotePlayer2State.paused;
+}
+
+function buildPlayer2Snapshot() {
+    if (usesLocalPlayer2()) {
+        return {
+            src: video2.currentSrc || video2.src || '',
+            filePath: lastVideoPath2 || null,
+            currentTime: video2.currentTime || 0,
+            duration: video2.duration || 0,
+            paused: !!video2.paused,
+            volume: Number.isFinite(video2.volume) ? video2.volume : 1,
+            muted: !!video2.muted,
+            playbackRate: Number.isFinite(video2.playbackRate) ? video2.playbackRate : globalPlaybackRate,
+            updatedAt: Date.now(),
+            subtitles: Array.isArray(subtitles2) ? [...subtitles2] : [],
+            subtitlePath: lastSubtitlePath2 || null,
+            subtitlesEnabled: subtitlesEnabled2 !== false,
+            subtitleFontScale: subtitleFontScale2,
+            tf: cloneTf(tf2)
+        };
+    }
+
+    return {
+        ...remotePlayer2State,
+        subtitles: Array.isArray(remotePlayer2State.subtitles) ? [...remotePlayer2State.subtitles] : [],
+        tf: isValidTf(remotePlayer2State.tf) ? cloneTf(remotePlayer2State.tf) : cloneTf(tf2)
+    };
+}
+
+function buildPlayer2SyncMeta() {
+    return {
+        syncPoint1,
+        syncPoint2,
+        isSynced,
+        delay,
+        globalPlaybackRate,
+        activeVideo
+    };
+}
+
+function snapshotUndoableState() {
+    return {
+        video1Time: Number.isFinite(video1?.currentTime) ? video1.currentTime : 0,
+        video2Time: getPlayer2Time(),
+        video1Paused: !!video1?.paused,
+        video2Paused: isPlayer2Paused(),
+        syncPoint1,
+        syncPoint2,
+        isSynced,
+        delay
+    };
+}
+
+function statesMatch(a, b) {
+    return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function setPlayButtonState(buttonId, paused) {
+    const button = document.getElementById(buttonId);
+    if (button) button.textContent = paused ? '▶' : '⏸';
+}
+
+function applyUndoableState(state) {
+    if (!state || typeof state !== 'object') return;
+
+    syncPoint1 = Number.isFinite(state.syncPoint1) ? state.syncPoint1 : null;
+    syncPoint2 = Number.isFinite(state.syncPoint2) ? state.syncPoint2 : null;
+    isSynced = !!state.isSynced;
+    delay = Number.isFinite(state.delay) ? state.delay : 0;
+    lastSyncTime = 0;
+
+    if (Number.isFinite(state.video1Time)) {
+        try { video1.currentTime = state.video1Time; } catch { }
+        updateProgress(video1, 'progressBar1', 'timeDisplay1');
+        updateSubtitles(1, state.video1Time);
+    }
+
+    if (Number.isFinite(state.video2Time)) {
+        if (isElectronWindowMode()) {
+            mergeRemotePlayer2State({ currentTime: state.video2Time, paused: !!state.video2Paused });
+            dispatchToPeer({ type: 'player2-seek', currentTime: state.video2Time });
+        } else {
+            try { video2.currentTime = state.video2Time; } catch { }
+            updateProgress(video2, 'progressBar2', 'timeDisplay2');
+            updateSubtitles(2, state.video2Time);
+        }
+    }
+
+    if (state.video1Paused) {
+        try { video1.pause(); } catch { }
+    } else {
+        video1.play().catch(() => { });
+    }
+    setPlayButtonState('playBtn1', !!state.video1Paused);
+
+    if (isElectronWindowMode()) {
+        mergeRemotePlayer2State({ paused: !!state.video2Paused });
+        dispatchToPeer({ type: state.video2Paused ? 'player2-pause' : 'player2-play' });
+    } else if (state.video2Paused) {
+        try { video2.pause(); } catch { }
+    } else {
+        video2.play().catch(() => { });
+    }
+    setPlayButtonState('playBtn2', !!state.video2Paused);
+
+    const syncControls = document.getElementById('syncControls');
+    if (syncControls) syncControls.style.display = isSynced ? 'none' : '';
+    if (isElectronWindowMode()) {
+        dispatchToPeer({ type: 'player2-sync-meta', sync: buildPlayer2SyncMeta() });
+    }
+    schedulePersistElectronPlaybackSession(0);
+}
+
+function recordUndoableAction(label, action) {
+    if (!isMainWindow()) return false;
+    const before = snapshotUndoableState();
+    action();
+    const after = snapshotUndoableState();
+    if (statesMatch(before, after)) return false;
+
+    undoStack.push({ label, before, after });
+    if (undoStack.length > HISTORY_LIMIT) undoStack.shift();
+    redoStack = [];
+    return true;
+}
+
+function undoLastAction() {
+    if (isPlayer2Window()) {
+        requestMainKeyboardControl('undo');
+        return;
+    }
+
+    const entry = undoStack.pop();
+    if (!entry) {
+        showControlNotification('Nothing to undo');
+        return;
+    }
+
+    redoStack.push(entry);
+    applyUndoableState(entry.before);
+    showControlNotification(`Undo: ${entry.label}`);
+}
+
+function redoLastAction() {
+    if (isPlayer2Window()) {
+        requestMainKeyboardControl('redo');
+        return;
+    }
+
+    const entry = redoStack.pop();
+    if (!entry) {
+        showControlNotification('Nothing to redo');
+        return;
+    }
+
+    undoStack.push(entry);
+    applyUndoableState(entry.after);
+    showControlNotification(`Redo: ${entry.label}`);
+}
+
+function setActiveVideo(nextVideo, options = {}) {
+    if (nextVideo !== 1 && nextVideo !== 2) return;
+    activeVideo = nextVideo;
+
+    if (options.notify !== false) {
+        showControlNotification(`Controlling Video ${activeVideo}`);
+    }
+
+    if (options.broadcast && isMainWindow() && isElectronWindowMode()) {
+        dispatchToPeer({ type: 'player2-sync-meta', sync: buildPlayer2SyncMeta() });
+    }
+}
+
+function requestMainKeyboardControl(action, payload = {}) {
+    if (!isPlayer2Window()) return false;
+    dispatchToPeer({
+        type: 'player2-request-keyboard-control',
+        action,
+        activeVideo,
+        ...payload
+    });
+    return true;
+}
+
+function applyTransformHotkey(code, alt, ctrl) {
+    const tf = activeVideo === 1 ? tf1 : tf2;
+
+    switch (code) {
+        // === Zoom / Rotate90 / Move Up-Right ===
+        case 'Numpad9':
+            if (alt) { // Rotate â­® 90Â° (clockwise)
+                tf.rot += 90; applyTransform();
+            } else if (ctrl) { // Move Up-Right
+                tf.tx += MOVE_STEP; tf.ty -= MOVE_STEP; applyTransform();
+            } else { // Zoom In
+                tf.zoom = clamp(tf.zoom + ZOOM_STEP, MIN_ZOOM, MAX_ZOOM); applyTransform();
+            }
+            return true;
+        // === Zoom Out / Rotate â­¯ / Move Down-Left ===
+        case 'Numpad1':
+            if (alt) { // Rotate â­¯ (counterclockwise) small step
+                tf.rot -= ROTATE_STEP; applyTransform();
+            } else if (ctrl) { // Move Down-Left
+                tf.tx -= MOVE_STEP; tf.ty += MOVE_STEP; applyTransform();
+            } else { // Zoom Out
+                tf.zoom = clamp(tf.zoom - ZOOM_STEP, MIN_ZOOM, MAX_ZOOM); applyTransform();
+            }
+            return true;
+        // === Horizontal Stretch / Flip H / Move Right ===
+        case 'Numpad6':
+            if (alt) { // Flip Horizontally (toggle)
+                tf.flipX *= -1; applyTransform();
+            } else if (ctrl) { // Move Right
+                tf.tx += MOVE_STEP; applyTransform();
+            } else { // Stretch X
+                tf.stretchX = clamp(tf.stretchX + STRETCH_STEP, MIN_STRETCH, MAX_STRETCH); applyTransform();
+            }
+            return true;
+        // === Horizontal Compress / Flip H / Move Left ===
+        case 'Numpad4':
+            if (alt) { // Flip Horizontally (toggle)
+                tf.flipX *= -1; applyTransform();
+            } else if (ctrl) { // Move Left
+                tf.tx -= MOVE_STEP; applyTransform();
+            } else { // Compress X
+                tf.stretchX = clamp(tf.stretchX - STRETCH_STEP, MIN_STRETCH, MAX_STRETCH); applyTransform();
+            }
+            return true;
+        // === Vertical Stretch / Flip V / Move Up ===
+        case 'Numpad8':
+            if (alt) { // Flip Vertically (toggle)
+                tf.flipY *= -1; applyTransform();
+            } else if (ctrl) { // Move Up
+                tf.ty -= MOVE_STEP; applyTransform();
+            } else { // Stretch Y
+                tf.stretchY = clamp(tf.stretchY + STRETCH_STEP, MIN_STRETCH, MAX_STRETCH); applyTransform();
+            }
+            return true;
+        // === Vertical Compress / Flip V / Move Down ===
+        case 'Numpad2':
+            if (alt) { // Flip Vertically (toggle)
+                tf.flipY *= -1; applyTransform();
+            } else if (ctrl) { // Move Down
+                tf.ty += MOVE_STEP; applyTransform();
+            } else { // Compress Y
+                tf.stretchY = clamp(tf.stretchY - STRETCH_STEP, MIN_STRETCH, MAX_STRETCH); applyTransform();
+            }
+            return true;
+        // === Rotate â­® (clockwise small) / Move Down-Right ===
+        case 'Numpad3':
+            if (alt) { // Rotate â­®
+                tf.rot += ROTATE_STEP; applyTransform();
+            } else if (ctrl) { // Move Down-Right
+                tf.tx += MOVE_STEP; tf.ty += MOVE_STEP; applyTransform();
+            } else {
+                return false;
+            }
+            return true;
+        // === Rotate â­¯ 90Â° (counterclockwise) / Move Up-Left ===
+        case 'Numpad7':
+            if (alt) { // Rotate â­¯ 90Â°
+                tf.rot -= 90; applyTransform();
+            } else if (ctrl) { // Move Up-Left
+                tf.tx -= MOVE_STEP; tf.ty -= MOVE_STEP; applyTransform();
+            } else {
+                return false;
+            }
+            return true;
+        // === Recenter / Reset ===
+        case 'Numpad5':
+            if (ctrl) { // Recenter (only translate)
+                recenter();
+            } else { // Reset all transformations
+                resetTransforms();
+            }
+            return true;
+        default:
+            return false;
+    }
 }
 
 function cloneTf(tf) {
@@ -147,6 +649,8 @@ function buildCurrentProfileState() {
         tf1: cloneTf(tf1),
         tf2: cloneTf(tf2),
         overlayGeom: getCurrentOverlayGeom(),
+        subtitleFontScale1,
+        subtitleFontScale2,
         activeVideo: activeVideo
     };
 }
@@ -158,6 +662,12 @@ function applyProfileState(state) {
     tf2 = cloneTf(state.tf2);
     applyTransform(1);
     applyTransform(2);
+    if (Number.isFinite(state.subtitleFontScale1)) {
+        setSubtitleFontScale(1, state.subtitleFontScale1, { notify: false, broadcast: false });
+    }
+    if (Number.isFinite(state.subtitleFontScale2)) {
+        setSubtitleFontScale(2, state.subtitleFontScale2, { notify: false, broadcast: false });
+    }
 
     if (state.overlayGeom) {
         if (applyOverlayGeom(state.overlayGeom)) {
@@ -473,6 +983,13 @@ function applyTransform(videoNum) {
     const sx = tf.zoom * tf.stretchX * tf.flipX;
     const sy = tf.zoom * tf.stretchY * tf.flipY;
     video.style.transform = `translate(${tf.tx}px, ${tf.ty}px) rotate(${tf.rot}deg) scale(${sx}, ${sy})`;
+    if (targetVideo === 2 && isElectronWindowMode()) {
+        remotePlayer2State.tf = cloneTf(tf2);
+        sendHydrateToPlayer2Window();
+    }
+    if (targetVideo === 2 && isPlayer2Window()) {
+        maybeBroadcastPlayer2State('transform');
+    }
     scheduleSaveTf();
 }
 
@@ -491,8 +1008,447 @@ function recenter() {
     applyTransform();
 }
 
+function setOverlayVisibilityForCurrentMode() {
+    const overlay = document.getElementById('overlayPlayer');
+    if (!overlay || isPlayer2Window()) return;
+    overlay.style.display = player2Mode === PLAYER2_MODES.window ? 'none' : '';
+}
+
+function updatePlayer2ModeMenu(state) {
+    const info = state || { mode: player2Mode, player2WindowOpen };
+    player2Mode = info.mode === PLAYER2_MODES.window ? PLAYER2_MODES.window : PLAYER2_MODES.overlay;
+    player2WindowOpen = !!info.player2WindowOpen;
+    if (!player2WindowOpen) player2Ready = false;
+
+    [
+        ['player2ModeToggle', 'player2ModeDivider'],
+        ['player2ModeToggle2', 'player2ModeDivider2']
+    ].forEach(([buttonId, dividerId]) => {
+        const toggleBtn = document.getElementById(buttonId);
+        const toggleDivider = document.getElementById(dividerId);
+        if (!toggleBtn) return;
+
+        if (!isElectronShell()) {
+            toggleBtn.style.display = 'none';
+            if (toggleDivider) toggleDivider.style.display = 'none';
+            return;
+        }
+
+        toggleBtn.style.display = 'block';
+        if (toggleDivider) toggleDivider.style.display = 'block';
+
+        if (player2Mode === PLAYER2_MODES.overlay) {
+            toggleBtn.textContent = 'Pop Out Player 2';
+        } else if (player2WindowOpen) {
+            toggleBtn.textContent = 'Dock Player 2';
+        } else {
+            toggleBtn.textContent = 'Reopen Player 2';
+        }
+    });
+
+    setOverlayVisibilityForCurrentMode();
+}
+
+function dispatchToPeer(message) {
+    if (!electronAPI || !message || typeof message !== 'object') return;
+    electronAPI.sendPlayerEvent(message);
+}
+
+function maybeBroadcastPlayer2State(reason) {
+    if (!electronAPI || !isPlayer2Window() || suppressPlayer2StateBroadcast) return;
+    dispatchToPeer({
+        type: 'player2-state',
+        reason: reason || 'state',
+        state: buildPlayer2Snapshot()
+    });
+}
+
+function handlePlayer2VolumeChange(reason) {
+    const slider = document.getElementById('volumeSlider2');
+    if (slider) {
+        slider.value = Number.isFinite(video2.volume) ? video2.volume.toFixed(3) : slider.value;
+        const pct = Math.max(0, Math.min(1, parseFloat(slider.value))) * 100;
+        slider.style.setProperty('--vol', pct + '%');
+    }
+    changeVolume(video2, video2.volume, 'muteBtn2');
+    maybeBroadcastPlayer2State(reason || 'volume');
+}
+
+function sendHydrateToPlayer2Window() {
+    if (!electronAPI || !isMainWindow() || player2Mode !== PLAYER2_MODES.window || !player2WindowOpen) return;
+    dispatchToPeer({
+        type: 'hydrate-player2',
+        state: buildPlayer2Snapshot(),
+        sync: buildPlayer2SyncMeta()
+    });
+}
+
+async function hydrateLocalPlayer2FromSnapshot(snapshot, options) {
+    const state = snapshot || createEmptyPlayer2State();
+    const opts = options || {};
+    const nextTf = isValidTf(state.tf) ? cloneTf(state.tf) : cloneTf(tf2);
+    const currentSrc = video2.currentSrc || video2.src || '';
+    const nextSrc = state.src || '';
+    const shouldLoad = currentSrc !== nextSrc;
+
+    suppressPlayer2StateBroadcast = true;
+    try {
+        subtitles2 = Array.isArray(state.subtitles) ? [...state.subtitles] : [];
+        subtitlesEnabled2 = state.subtitlesEnabled !== false;
+        lastSubtitlePath2 = typeof state.subtitlePath === 'string' ? state.subtitlePath : null;
+        setSubtitleFontScale(2, state.subtitleFontScale, { notify: false, broadcast: false });
+        tf2 = nextTf;
+        if (lastVideoPath2 !== state.filePath && typeof state.filePath === 'string') {
+            lastVideoPath2 = state.filePath;
+        }
+
+        if (shouldLoad) {
+            if (nextSrc) {
+                await loadVideoFromSource(video2, nextSrc, VIDEO_PLAYER_IDS.video2, state.filePath || null, {
+                    persist: opts.persist !== false,
+                    skipModeRouting: true
+                });
+            } else {
+                try { video2.pause(); } catch { }
+                video2.removeAttribute('src');
+                video2.load();
+            }
+        }
+
+        const applyState = () => {
+            if (Number.isFinite(state.playbackRate)) {
+                globalPlaybackRate = state.playbackRate;
+                try { video2.playbackRate = state.playbackRate; } catch { }
+            }
+            if (Number.isFinite(state.volume)) video2.volume = state.volume;
+            video2.muted = !!state.muted;
+            if (Number.isFinite(state.currentTime) && (video2.duration || nextSrc)) {
+                try { video2.currentTime = state.currentTime; } catch { }
+            }
+            if (state.paused === false) {
+                video2.play().catch(() => { });
+            } else {
+                try { video2.pause(); } catch { }
+            }
+            syncSpeedSelects(globalPlaybackRate);
+            applyTransform(2);
+            updateProgress(video2, 'progressBar2', 'timeDisplay2');
+            updateSubtitles(2, state.currentTime || video2.currentTime || 0);
+            handlePlayer2VolumeChange('hydrate');
+        };
+
+        if (shouldLoad && nextSrc) {
+            await new Promise((resolve) => {
+                let finished = false;
+                const done = () => {
+                    if (finished) return;
+                    finished = true;
+                    applyState();
+                    resolve();
+                };
+                video2.addEventListener('loadedmetadata', done, { once: true });
+                setTimeout(done, 500);
+            });
+        } else {
+            applyState();
+        }
+    } finally {
+        suppressPlayer2StateBroadcast = false;
+    }
+}
+
+function applySyncMeta(sync) {
+    if (!sync || typeof sync !== 'object') return;
+    syncPoint1 = sync.syncPoint1 ?? null;
+    syncPoint2 = sync.syncPoint2 ?? null;
+    isSynced = !!sync.isSynced;
+    delay = Number.isFinite(sync.delay) ? sync.delay : 0;
+    if (Number.isFinite(sync.globalPlaybackRate)) {
+        globalPlaybackRate = sync.globalPlaybackRate;
+        syncSpeedSelects(globalPlaybackRate);
+    }
+    if (sync.activeVideo === 1 || sync.activeVideo === 2) {
+        activeVideo = sync.activeVideo;
+    }
+
+    const syncControls = document.getElementById('syncControls');
+    if (syncControls) syncControls.style.display = isSynced ? 'none' : '';
+}
+
+async function enterPlayer2WindowMode() {
+    remotePlayer2State = buildPlayer2Snapshot();
+    pendingPlayer2Hydration = true;
+    const nextState = await electronAPI.setPlayer2Mode(PLAYER2_MODES.window);
+    updatePlayer2ModeMenu(nextState);
+    try { video2.pause(); } catch { }
+    video2.removeAttribute('src');
+    video2.load();
+}
+
+async function dockPlayer2ToOverlay() {
+    await hydrateLocalPlayer2FromSnapshot(buildPlayer2Snapshot(), { persist: false });
+    const nextState = await electronAPI.setPlayer2Mode(PLAYER2_MODES.overlay);
+    updatePlayer2ModeMenu(nextState);
+}
+
+async function handlePlayer2ModeToggle() {
+    if (!electronAPI || !isMainWindow()) return;
+    if (player2Mode === PLAYER2_MODES.overlay) {
+        await enterPlayer2WindowMode();
+        return;
+    }
+    if (player2WindowOpen) {
+        await dockPlayer2ToOverlay();
+        return;
+    }
+    pendingPlayer2Hydration = true;
+    const nextState = await electronAPI.showPlayer2Window();
+    updatePlayer2ModeMenu(nextState);
+}
+
+async function handlePlayer2ModeToggleClick(event, settingsId) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (isPlayer2Window()) {
+        dispatchToPeer({ type: 'player2-request-dock' });
+    } else {
+        await handlePlayer2ModeToggle();
+    }
+
+    document.getElementById(settingsId)?.classList.remove('open');
+}
+
+async function initializeElectronContext() {
+    if (!electronAPI) return;
+
+    try {
+        const ctx = await electronAPI.getWindowContext();
+        if (ctx && ctx.role === WINDOW_ROLES.player2) {
+            windowRole = WINDOW_ROLES.player2;
+            document.body.classList.add('player2-window');
+            activeVideo = 2;
+        } else {
+            windowRole = WINDOW_ROLES.main;
+            document.body.classList.remove('player2-window');
+        }
+        updatePlayer2ModeMenu(ctx);
+    } catch {
+        windowRole = WINDOW_ROLES.main;
+        updatePlayer2ModeMenu({ mode: PLAYER2_MODES.overlay, player2WindowOpen: false });
+    }
+
+    electronAPI.onPlayer2ModeState((state) => {
+        const wasOpen = player2WindowOpen;
+        updatePlayer2ModeMenu(state);
+        if (isMainWindow() && player2Mode === PLAYER2_MODES.window && player2WindowOpen && (!wasOpen || pendingPlayer2Hydration)) {
+            sendHydrateToPlayer2Window();
+            pendingPlayer2Hydration = false;
+        }
+    });
+
+    electronAPI.onPlayerEvent(async (message) => {
+        if (!message || typeof message !== 'object') return;
+
+        if (isPlayer2Window()) {
+            if (message.type === 'hydrate-player2') {
+                applySyncMeta(message.sync);
+                await hydrateLocalPlayer2FromSnapshot(message.state, { persist: false });
+                maybeBroadcastPlayer2State('hydrate-applied');
+            } else if (message.type === 'player2-seek') {
+                if (Number.isFinite(message.currentTime)) {
+                    try { video2.currentTime = message.currentTime; } catch { }
+                    updateProgress(video2, 'progressBar2', 'timeDisplay2');
+                    updateSubtitles(2, video2.currentTime || 0);
+                    maybeBroadcastPlayer2State('seek-command');
+                }
+            } else if (message.type === 'player2-play') {
+                video2.play().catch(() => { });
+            } else if (message.type === 'player2-pause') {
+                try { video2.pause(); } catch { }
+            } else if (message.type === 'player2-speed') {
+                const rate = Number(message.rate);
+                if (Number.isFinite(rate)) {
+                    globalPlaybackRate = rate;
+                    try { video2.playbackRate = rate; } catch { }
+                    syncSpeedSelects(rate);
+                    maybeBroadcastPlayer2State('speed-command');
+                }
+            } else if (message.type === 'player2-subtitle-font-scale') {
+                setSubtitleFontScale(2, message.scale, { notify: false, broadcast: false });
+                maybeBroadcastPlayer2State('subtitle-font-scale-command');
+            } else if (message.type === 'player2-subtitles-enabled') {
+                setSubtitlesEnabled(2, message.enabled !== false, { notify: false, broadcast: false });
+                maybeBroadcastPlayer2State('subtitle-toggle-command');
+            } else if (message.type === 'player2-sync-meta') {
+                applySyncMeta(message.sync);
+            }
+            return;
+        }
+
+        if (message.type === 'player2-ready') {
+            player2Ready = true;
+            player2WindowOpen = true;
+            if (player2Mode === PLAYER2_MODES.window) {
+                sendHydrateToPlayer2Window();
+                pendingPlayer2Hydration = false;
+            }
+            return;
+        }
+
+        if (message.type === 'player2-state') {
+            const merged = mergeRemotePlayer2State(message.state);
+            if (isValidTf(merged.tf)) tf2 = cloneTf(merged.tf);
+            if (Array.isArray(merged.subtitles)) subtitles2 = [...merged.subtitles];
+            subtitlesEnabled2 = merged.subtitlesEnabled !== false;
+            lastSubtitlePath2 = typeof merged.subtitlePath === 'string' ? merged.subtitlePath : null;
+            setSubtitleFontScale(2, merged.subtitleFontScale, { notify: false, broadcast: false });
+            if (typeof merged.filePath === 'string') lastVideoPath2 = merged.filePath;
+            schedulePersistElectronPlaybackSession();
+            return;
+        }
+
+        if (message.type === 'player2-request-toggle-play') {
+            const requestedTime = Number.isFinite(message.currentTime) ? message.currentTime : getPlayer2Time();
+            mergeRemotePlayer2State({ currentTime: requestedTime });
+
+            if (isSynced) {
+                const v1Target = requestedTime - (syncPoint2 || 0) - (delay || 0) + (syncPoint1 || 0);
+                if (Number.isFinite(v1Target)) {
+                    const v1Dur = video1.duration || 0;
+                    const clamped = Math.max(0, Math.min(v1Dur || Number.MAX_SAFE_INTEGER, v1Target));
+                    if (v1Dur > 0) video1.currentTime = clamped;
+                }
+
+                if (video1.paused) {
+                    video1.play().catch(() => { });
+                    document.getElementById('playBtn1').textContent = '⏸';
+                    mergeRemotePlayer2State({ paused: false, currentTime: requestedTime });
+                    dispatchToPeer({ type: 'player2-seek', currentTime: requestedTime });
+                    dispatchToPeer({ type: 'player2-play' });
+                } else {
+                    video1.pause();
+                    document.getElementById('playBtn1').textContent = '▶';
+                    mergeRemotePlayer2State({ paused: true, currentTime: requestedTime });
+                    dispatchToPeer({ type: 'player2-pause' });
+                }
+                dispatchToPeer({ type: 'player2-sync-meta', sync: buildPlayer2SyncMeta() });
+            }
+            return;
+        }
+
+        if (message.type === 'player2-request-seek') {
+            if (Number.isFinite(message.currentTime)) {
+                const previous = remotePlayer2State.currentTime || 0;
+                remotePlayer2State.currentTime = message.currentTime;
+                const syncedTime = message.currentTime;
+                if (isSynced) {
+                    const v1Target = syncedTime - (syncPoint2 || 0) - (delay || 0) + (syncPoint1 || 0);
+                    const v1Dur = video1.duration || 0;
+                    const clamped = Math.max(0, Math.min(v1Dur || Number.MAX_SAFE_INTEGER, v1Target));
+                    if (Number.isFinite(clamped)) video1.currentTime = clamped;
+                    const v1Now = video1.currentTime || 0;
+                    syncPoint2 = syncedTime - (v1Now - (syncPoint1 || 0)) - (delay || 0);
+                    lastSyncTime = Date.now();
+                    dispatchToPeer({ type: 'player2-sync-meta', sync: buildPlayer2SyncMeta() });
+                } else if (Math.abs(previous - syncedTime) > 0.001) {
+                    dispatchToPeer({ type: 'player2-seek', currentTime: syncedTime });
+                }
+            }
+            return;
+        }
+
+        if (message.type === 'player2-request-speed') {
+            changeSpeed(video2, message.rate);
+            return;
+        }
+
+        if (message.type === 'player2-request-active-video') {
+            setActiveVideo(message.activeVideo, { broadcast: true });
+            return;
+        }
+
+        if (message.type === 'player2-request-keyboard-control') {
+            if (message.activeVideo === 1 || message.activeVideo === 2) {
+                activeVideo = message.activeVideo;
+            }
+
+            if (message.action === 'toggle-play') {
+                const activeVid = activeVideo === 1 ? video1 : video2;
+                const activeBtnId = activeVideo === 1 ? 'playBtn1' : 'playBtn2';
+                togglePlay(activeVid, activeBtnId);
+            } else if (message.action === 'skip-time') {
+                const seconds = Number(message.seconds);
+                if (Number.isFinite(seconds)) skipTime(seconds);
+            } else if (message.action === 'step-frame') {
+                const direction = Number(message.direction);
+                if (Number.isFinite(direction)) startFrameStepHold(direction);
+            } else if (message.action === 'stop-frame-step') {
+                const direction = Number(message.direction);
+                if (!Number.isFinite(direction) || frameStepHoldDirection === direction) stopFrameStepHold();
+            } else if (message.action === 'speed') {
+                const direction = Number(message.direction);
+                if (Number.isFinite(direction)) bumpSpeed(direction);
+            } else if (message.action === 'subtitle-font-size') {
+                const direction = Number(message.direction);
+                if (Number.isFinite(direction)) adjustSubtitleFontScale(activeVideo, direction);
+            } else if (message.action === 'toggle-subtitles') {
+                toggleSubtitles(activeVideo);
+            } else if (message.action === 'set-sync') {
+                if (!isSynced) recordUndoableAction('Set Sync Point', setSyncPoint);
+            } else if (message.action === 'clear-sync') {
+                recordUndoableAction('Clear Sync', clearSyncPoint);
+            } else if (message.action === 'reset-timestamps') {
+                recordUndoableAction('Reset Timestamps', resetTimestampsAndClearSync);
+            } else if (message.action === 'undo') {
+                undoLastAction();
+            } else if (message.action === 'redo') {
+                redoLastAction();
+            } else if (message.action === 'transform-key') {
+                applyTransformHotkey(String(message.code || ''), !!message.alt, !!message.ctrl);
+            }
+
+            if (isElectronWindowMode()) {
+                dispatchToPeer({ type: 'player2-sync-meta', sync: buildPlayer2SyncMeta() });
+            }
+            return;
+        }
+
+        if (message.type === 'player2-request-set-sync') {
+            recordUndoableAction('Set Sync Point', setSyncPoint);
+            return;
+        }
+
+        if (message.type === 'player2-request-clear-sync') {
+            recordUndoableAction('Clear Sync', clearSyncPoint);
+            dispatchToPeer({ type: 'player2-sync-meta', sync: buildPlayer2SyncMeta() });
+            return;
+        }
+
+        if (message.type === 'player2-request-reset-timestamps') {
+            recordUndoableAction('Reset Timestamps', resetTimestampsAndClearSync);
+            return;
+        }
+
+        if (message.type === 'player2-request-swap') {
+            swapVideos();
+            return;
+        }
+
+        if (message.type === 'player2-request-dock') {
+            await dockPlayer2ToOverlay();
+        }
+    });
+
+    if (isPlayer2Window()) {
+        dispatchToPeer({ type: 'player2-ready' });
+    }
+}
+
 // Initialize players
 async function initializePlayers() {
+    await initializeElectronContext();
+
     // File inputs
     document.getElementById('file1').addEventListener('change', (e) => loadVideo(e, video1, VIDEO_PLAYER_IDS.video1));
     document.getElementById('file2').addEventListener('change', (e) => loadVideo(e, video2, VIDEO_PLAYER_IDS.video2));
@@ -507,6 +1463,19 @@ async function initializePlayers() {
     // Settings dropdowns: open/close + actions
     setupDropdown('1');
     setupDropdown('2');
+    setupSubtitleFontSizeControls(1);
+    setupSubtitleFontSizeControls(2);
+    restoreSubtitleFontScales();
+    setSubtitleFontScale(1, subtitleFontScale1, { notify: false, broadcast: false });
+    setSubtitleFontScale(2, subtitleFontScale2, { notify: false, broadcast: false });
+    const player2ModeToggle = document.getElementById('player2ModeToggle');
+    if (player2ModeToggle) {
+        player2ModeToggle.addEventListener('click', (event) => handlePlayer2ModeToggleClick(event, 'settings1'));
+    }
+    const player2ModeToggle2 = document.getElementById('player2ModeToggle2');
+    if (player2ModeToggle2) {
+        player2ModeToggle2.addEventListener('click', (event) => handlePlayer2ModeToggleClick(event, 'settings2'));
+    }
 
     // No CC buttons; subtitles default enabled
 
@@ -532,7 +1501,12 @@ async function initializePlayers() {
     const initialRate = Number.isFinite(savedRate)
         ? String(savedRate)
         : (s1 && s1.value) ? s1.value : '1';
-    changeSpeed(video1, initialRate);
+    if (isPlayer2Window()) {
+        try { video2.playbackRate = parseFloat(initialRate); } catch { }
+        syncSpeedSelects(parseFloat(initialRate));
+    } else {
+        changeSpeed(video1, initialRate);
+    }
 
     // Ensure any future metadata load applies the global rate
     ['loadedmetadata', 'emptied'].forEach(evt => {
@@ -550,6 +1524,7 @@ async function initializePlayers() {
         changeVolume(video2, e.target.value, 'muteBtn2');
         const pct = Math.max(0, Math.min(1, parseFloat(e.target.value))) * 100;
         e.target.style.setProperty('--vol', pct + '%');
+        if (isPlayer2Window()) maybeBroadcastPlayer2State('volume-input');
     });
     document.getElementById('muteBtn1').addEventListener('click', () => toggleMute(video1, 'muteBtn1', 'volumeSlider1'));
     document.getElementById('muteBtn2').addEventListener('click', () => toggleMute(video2, 'muteBtn2', 'volumeSlider2'));
@@ -601,29 +1576,67 @@ async function initializePlayers() {
     }
 
     // Sync control (Set only)
-    document.getElementById('setSyncBtn').addEventListener('click', setSyncPoint);
+    document.getElementById('setSyncBtn').addEventListener('click', () => {
+        if (isPlayer2Window()) {
+            dispatchToPeer({ type: 'player2-request-set-sync' });
+            return;
+        }
+        recordUndoableAction('Set Sync Point', setSyncPoint);
+    });
 
     // Video events
     video1.addEventListener('timeupdate', () => {
         updateProgress(video1, 'progressBar1', 'timeDisplay1');
         updateSubtitles(1, video1.currentTime);
+        schedulePersistElectronPlaybackSession();
     });
     video2.addEventListener('timeupdate', () => {
         updateProgress(video2, 'progressBar2', 'timeDisplay2');
         updateSubtitles(2, video2.currentTime);
+        schedulePersistElectronPlaybackSession();
     });
     // Keep play/pause icons in sync with state, even on programmatic play/pause
-    video1.addEventListener('play', () => { const b = document.getElementById('playBtn1'); if (b) b.textContent = '⏸'; });
-    video1.addEventListener('pause', () => { const b = document.getElementById('playBtn1'); if (b) b.textContent = '▶'; });
-    video2.addEventListener('play', () => { const b = document.getElementById('playBtn2'); if (b) b.textContent = '⏸'; });
-    video2.addEventListener('pause', () => { const b = document.getElementById('playBtn2'); if (b) b.textContent = '▶'; });
+    video1.addEventListener('play', () => {
+        const b = document.getElementById('playBtn1');
+        if (b) b.textContent = '⏸';
+        schedulePersistElectronPlaybackSession();
+    });
+    video1.addEventListener('pause', () => {
+        const b = document.getElementById('playBtn1');
+        if (b) b.textContent = '▶';
+        schedulePersistElectronPlaybackSession(0);
+    });
+    video2.addEventListener('play', () => {
+        const b = document.getElementById('playBtn2');
+        if (b) b.textContent = '⏸';
+        schedulePersistElectronPlaybackSession();
+        if (isPlayer2Window()) maybeBroadcastPlayer2State('play');
+    });
+    video2.addEventListener('pause', () => {
+        const b = document.getElementById('playBtn2');
+        if (b) b.textContent = '▶';
+        schedulePersistElectronPlaybackSession(0);
+        if (isPlayer2Window()) maybeBroadcastPlayer2State('pause');
+    });
+    video2.addEventListener('loadedmetadata', () => {
+        schedulePersistElectronPlaybackSession();
+        if (isPlayer2Window()) maybeBroadcastPlayer2State('loadedmetadata');
+    });
+    video2.addEventListener('volumechange', () => {
+        if (isPlayer2Window()) handlePlayer2VolumeChange('volumechange');
+    });
     video1.addEventListener('timeupdate', handleSync);
 
     // Keyboard controls (includes transform hotkeys for MAIN player)
     document.addEventListener('keydown', handleKeyboard);
+    document.addEventListener('keyup', handleKeyboardKeyup);
+    window.addEventListener('blur', stopFrameStepHold);
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) stopFrameStepHold();
+    });
 
     // Dragging functionality (restores saved overlay geometry)
-    initializeDragging();
+    if (isMainWindow()) initializeDragging();
 
     // Inactivity handling (hide controls and cursor)
     setupInactivityHide();
@@ -666,7 +1679,19 @@ async function initializePlayers() {
     updateFullscreenButtons();
 
     // Restore last selected local files (Electron only)
-    await restoreLastPlayedVideos();
+    if (isPlayer2Window()) {
+        maybeBroadcastPlayer2State('ready-init');
+    } else {
+        await restoreLastPlayedVideos();
+        await restoreLastPlayedSubtitles();
+        await restoreElectronPlaybackSession();
+    }
+
+    if (isMainWindow()) {
+        window.addEventListener('beforeunload', () => {
+            persistElectronPlaybackSessionNow();
+        });
+    }
 }
 
 function setupCtrlWheelZoom() {
@@ -753,6 +1778,77 @@ function updateFullscreenButtons() {
 
 document.addEventListener('fullscreenchange', updateFullscreenButtons);
 
+function normalizeSubtitleFontScale(scale) {
+    if (scale === null || scale === undefined || scale === '') return 1;
+    const n = Number(scale);
+    if (!Number.isFinite(n)) return 1;
+    return Math.round(Math.max(SUBTITLE_FONT_SCALE_MIN, n) * 10) / 10;
+}
+
+function updateSubtitleFontScaleUI(playerNum) {
+    const scale = playerNum === 1 ? subtitleFontScale1 : subtitleFontScale2;
+    const value = document.getElementById(`subtitleSizeValue${playerNum}`);
+    const downBtn = document.getElementById(`subtitleSizeDown${playerNum}`);
+    if (value) value.textContent = `${Math.round(scale * 100)}%`;
+    if (downBtn) downBtn.disabled = scale <= SUBTITLE_FONT_SCALE_MIN;
+}
+
+function setSubtitleFontScale(playerNum, scale, options = {}) {
+    const nextScale = normalizeSubtitleFontScale(scale);
+    const display = document.getElementById(playerNum === 1 ? 'subtitle1Display' : 'subtitle2Display');
+
+    if (playerNum === 1) {
+        subtitleFontScale1 = nextScale;
+    } else {
+        subtitleFontScale2 = nextScale;
+    }
+
+    if (display) display.style.setProperty('--subtitle-font-scale', String(nextScale));
+    updateSubtitleFontScaleUI(playerNum);
+    lsSet(playerNum === 1 ? LS_KEYS.subtitleFontScale1 : LS_KEYS.subtitleFontScale2, String(nextScale));
+
+    if (options.notify) {
+        showControlNotification(`Subtitle ${playerNum} size ${Math.round(nextScale * 100)}%`);
+    }
+
+    if (playerNum === 2 && options.broadcast !== false) {
+        if (isMainWindow() && isElectronWindowMode()) {
+            mergeRemotePlayer2State({ subtitleFontScale: nextScale });
+            dispatchToPeer({ type: 'player2-subtitle-font-scale', scale: nextScale });
+        } else {
+            maybeBroadcastPlayer2State('subtitle-font-scale');
+        }
+    }
+}
+
+function adjustSubtitleFontScale(playerNum, direction) {
+    const current = playerNum === 1 ? subtitleFontScale1 : subtitleFontScale2;
+    setSubtitleFontScale(playerNum, current + (direction * SUBTITLE_FONT_SCALE_STEP), { notify: true });
+}
+
+function setupSubtitleFontSizeControls(playerNum) {
+    const downBtn = document.getElementById(`subtitleSizeDown${playerNum}`);
+    const upBtn = document.getElementById(`subtitleSizeUp${playerNum}`);
+    const bind = (button, direction) => {
+        if (!button) return;
+        button.addEventListener('click', (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            adjustSubtitleFontScale(playerNum, direction);
+        });
+    };
+    bind(downBtn, -1);
+    bind(upBtn, 1);
+    updateSubtitleFontScaleUI(playerNum);
+}
+
+function restoreSubtitleFontScales() {
+    const saved1 = normalizeSubtitleFontScale(lsGet(LS_KEYS.subtitleFontScale1));
+    const saved2 = normalizeSubtitleFontScale(lsGet(LS_KEYS.subtitleFontScale2));
+    subtitleFontScale1 = saved1;
+    subtitleFontScale2 = saved2;
+}
+
 function setupDropdown(id) {
     const dropdown = document.getElementById(`settings${id}`);
     if (!dropdown) return;
@@ -803,6 +1899,8 @@ function setupInactivityHide() {
         inactivityTimer = setTimeout(hideControls, IDLE_MS);
     };
 
+    revealPlayerControls = resetTimer;
+
     // Mouse/pointer movement resets the timer
     document.addEventListener('mousemove', resetTimer, { passive: true });
     document.addEventListener('pointermove', resetTimer, { passive: true });
@@ -826,6 +1924,8 @@ function setupElectronFilePickers() {
 
     const video1Label = document.getElementById('chooseVideo1Label');
     const video2Label = document.getElementById('chooseVideo2Label');
+    const subtitle1Label = document.querySelector('label[for="subtitle1"]');
+    const subtitle2Label = document.querySelector('label[for="subtitle2"]');
 
     if (video1Label) {
         video1Label.addEventListener('click', async (event) => {
@@ -840,6 +1940,22 @@ function setupElectronFilePickers() {
             await openVideoFromDialog(video2, VIDEO_PLAYER_IDS.video2);
         });
     }
+
+    if (subtitle1Label) {
+        subtitle1Label.addEventListener('click', async (event) => {
+            event.preventDefault();
+            await openSubtitleFromDialog(1);
+            document.getElementById('settings1')?.classList.remove('open');
+        });
+    }
+
+    if (subtitle2Label) {
+        subtitle2Label.addEventListener('click', async (event) => {
+            event.preventDefault();
+            await openSubtitleFromDialog(2);
+            document.getElementById('settings2')?.classList.remove('open');
+        });
+    }
 }
 
 async function openVideoFromDialog(video, playerId) {
@@ -848,6 +1964,7 @@ async function openVideoFromDialog(video, playerId) {
         const selected = await electronAPI.openVideoFile();
         if (!selected || !selected.path || !selected.fileUrl) return;
         await loadVideoFromSource(video, selected.fileUrl, playerId, selected.path);
+        await autoLoadSubtitleForVideo(playerId, selected.path);
     } catch {
         // no-op
     }
@@ -861,20 +1978,107 @@ async function restoreLastPlayedVideos() {
             electronAPI.getLastVideo(VIDEO_PLAYER_IDS.video2)
         ]);
 
-        if (last1 && last1.fileUrl) {
+        if (last1 && last1.fileUrl && isMainWindow()) {
             await loadVideoFromSource(video1, last1.fileUrl, VIDEO_PLAYER_IDS.video1, last1.path, { persist: false });
+            await autoLoadSubtitleForVideo(VIDEO_PLAYER_IDS.video1, last1.path, { persist: false, skipIfExisting: true });
         }
         if (last2 && last2.fileUrl) {
+            if (isElectronWindowMode()) {
+                remotePlayer2State = mergeRemotePlayer2State({
+                    src: last2.fileUrl,
+                    filePath: last2.path,
+                    playbackRate: globalPlaybackRate,
+                    paused: true
+                });
+                await autoLoadSubtitleForVideo(VIDEO_PLAYER_IDS.video2, last2.path, { persist: false, skipIfExisting: true });
+                pendingPlayer2Hydration = true;
+                if (player2WindowOpen) sendHydrateToPlayer2Window();
+                schedulePersistElectronPlaybackSession();
+                return;
+            }
             await loadVideoFromSource(video2, last2.fileUrl, VIDEO_PLAYER_IDS.video2, last2.path, { persist: false });
+            await autoLoadSubtitleForVideo(VIDEO_PLAYER_IDS.video2, last2.path, { persist: false, skipIfExisting: true });
         }
     } catch {
         // no-op: app still works without restoring prior files
     }
 }
 
+function getPlayerNumFromPlayerId(playerId) {
+    return playerId === VIDEO_PLAYER_IDS.video1 ? 1 : 2;
+}
+
+function hasSubtitleForPlayer(playerNum) {
+    const subtitles = playerNum === 1 ? subtitles1 : subtitles2;
+    return Array.isArray(subtitles) && subtitles.length > 0;
+}
+
+async function autoLoadSubtitleForVideo(playerId, videoPath, options = {}) {
+    if (!electronAPI || !videoPath || typeof electronAPI.findSubtitleForVideo !== 'function') return;
+    const playerNum = getPlayerNumFromPlayerId(playerId);
+    if (options.skipIfExisting && hasSubtitleForPlayer(playerNum)) return;
+
+    try {
+        const subtitle = await electronAPI.findSubtitleForVideo(videoPath);
+        if (!subtitle || !subtitle.path || typeof subtitle.content !== 'string') return;
+        await applySubtitleContent(playerNum, subtitle.content, subtitle.path, {
+            persist: options.persist !== false
+        });
+    } catch {
+        // no-op: matching subtitles are optional
+    }
+}
+
+async function openSubtitleFromDialog(playerNum) {
+    if (!electronAPI) return;
+    try {
+        const selected = await electronAPI.openSubtitleFile();
+        if (!selected || !selected.path || typeof selected.content !== 'string') return;
+        await applySubtitleContent(playerNum, selected.content, selected.path);
+    } catch {
+        // no-op
+    }
+}
+
+async function restoreLastPlayedSubtitles() {
+    if (!electronAPI) return;
+    try {
+        const [last1, last2] = await Promise.all([
+            electronAPI.getLastSubtitle(VIDEO_PLAYER_IDS.video1),
+            electronAPI.getLastSubtitle(VIDEO_PLAYER_IDS.video2)
+        ]);
+
+        if (last1 && typeof last1.content === 'string' && isMainWindow()) {
+            await applySubtitleContent(1, last1.content, last1.path, { persist: false });
+        }
+
+        if (last2 && typeof last2.content === 'string') {
+            await applySubtitleContent(2, last2.content, last2.path, { persist: false });
+        }
+    } catch {
+        // no-op: app still works without restoring prior subtitles
+    }
+}
+
 async function loadVideoFromSource(video, src, playerId, localPath, options) {
     if (!video || !src) return;
     const opts = options || {};
+    if (playerId === VIDEO_PLAYER_IDS.video2 && isElectronWindowMode() && !opts.skipModeRouting) {
+        remotePlayer2State = mergeRemotePlayer2State({
+            ...remotePlayer2State,
+            src,
+            filePath: localPath || null,
+            currentTime: 0,
+            duration: 0,
+            paused: true,
+            playbackRate: globalPlaybackRate
+        });
+        if (opts.persist !== false && electronAPI && localPath) {
+            try { await electronAPI.setLastVideo(playerId, localPath); } catch { }
+        }
+        sendHydrateToPlayer2Window();
+        return;
+    }
     if (playerId === VIDEO_PLAYER_IDS.video1) lastVideoPath1 = localPath || null;
     if (playerId === VIDEO_PLAYER_IDS.video2) lastVideoPath2 = localPath || null;
     video.src = src;
@@ -885,6 +2089,7 @@ async function loadVideoFromSource(video, src, playerId, localPath, options) {
     if (opts.persist !== false && electronAPI && playerId && localPath) {
         try { await electronAPI.setLastVideo(playerId, localPath); } catch { }
     }
+    schedulePersistElectronPlaybackSession();
 }
 
 function loadVideo(event, video, playerId) {
@@ -896,27 +2101,91 @@ function loadVideo(event, video, playerId) {
 }
 
 function togglePlay(video, btnId) {
+    if (isPlayer2Window() && video === video2) {
+        if (isSynced) {
+            dispatchToPeer({
+                type: 'player2-request-toggle-play',
+                currentTime: video2.currentTime || 0
+            });
+            return;
+        }
+        const btn = document.getElementById(btnId);
+        if (video.paused) {
+            video.play().catch(() => { });
+            if (btn) btn.textContent = '⏸';
+        } else {
+            try { video.pause(); } catch { }
+            if (btn) btn.textContent = '▶';
+        }
+        maybeBroadcastPlayer2State('play-toggle');
+        return;
+    }
+
     const btn = document.getElementById(btnId);
-    if (video.paused) {
+    const player2Paused = isPlayer2Paused();
+    let player2PausedAfterToggle = player2Paused;
+    if (video === video2 && isElectronWindowMode()) {
+        const shouldPlay = player2Paused;
+        const requestedTime = getPlayer2Time();
+        player2PausedAfterToggle = !shouldPlay;
+        mergeRemotePlayer2State({
+            paused: player2PausedAfterToggle,
+            currentTime: requestedTime,
+            playbackRate: globalPlaybackRate
+        });
+        if (btn) btn.textContent = shouldPlay ? '⏸' : '▶';
+        dispatchToPeer({ type: shouldPlay ? 'player2-play' : 'player2-pause' });
+        if (isSynced) {
+            const v1Target = requestedTime - (syncPoint2 || 0) - (delay || 0) + (syncPoint1 || 0);
+            if (Number.isFinite(v1Target)) {
+                const v1Dur = video1.duration || 0;
+                const clamped = Math.max(0, Math.min(v1Dur || Number.MAX_SAFE_INTEGER, v1Target));
+                if (v1Dur > 0) {
+                    try { video1.currentTime = clamped; } catch { }
+                }
+            }
+            if (shouldPlay) {
+                video1.play().catch(() => { });
+                document.getElementById('playBtn1').textContent = '⏸';
+            } else {
+                try { video1.pause(); } catch { }
+                document.getElementById('playBtn1').textContent = '▶';
+            }
+            dispatchToPeer({ type: 'player2-sync-meta', sync: buildPlayer2SyncMeta() });
+        }
+        schedulePersistElectronPlaybackSession(0);
+        return;
+    } else if (video.paused) {
         video.play();
-        btn.textContent = '⏸';
+        if (btn) btn.textContent = '⏸';
     } else {
         video.pause();
-        btn.textContent = '▶';
+        if (btn) btn.textContent = '▶';
     }
 
     // Sync play/pause if synced (works for both players)
     if (isSynced) {
         if (video === video1) {
             if (video.paused) {
-                video2.pause();
-                document.getElementById('playBtn2').textContent = '▶';
+                if (isElectronWindowMode()) {
+                    remotePlayer2State.paused = true;
+                    dispatchToPeer({ type: 'player2-pause' });
+                } else {
+                    video2.pause();
+                    document.getElementById('playBtn2').textContent = '▶';
+                }
             } else {
-                video2.play();
-                document.getElementById('playBtn2').textContent = '⏸';
+                if (isElectronWindowMode()) {
+                    remotePlayer2State.paused = false;
+                    dispatchToPeer({ type: 'player2-play' });
+                } else {
+                    video2.play();
+                    document.getElementById('playBtn2').textContent = '⏸';
+                }
             }
         } else if (video === video2) {
-            if (video.paused) {
+            const paused = isElectronWindowMode() ? player2PausedAfterToggle : video.paused;
+            if (paused) {
                 video1.pause();
                 document.getElementById('playBtn1').textContent = '▶';
             } else {
@@ -934,6 +2203,32 @@ function seekVideo(event, video, progressId) {
     const percentage = clickX / rect.width;
     const newTime = percentage * video.duration;
 
+    if (isPlayer2Window() && video === video2) {
+        video.currentTime = newTime;
+        updateProgress(video2, 'progressBar2', 'timeDisplay2');
+        dispatchToPeer({ type: 'player2-request-seek', currentTime: newTime });
+        return;
+    }
+
+    if (video === video2 && isElectronWindowMode()) {
+        remotePlayer2State.currentTime = newTime;
+        dispatchToPeer({ type: 'player2-seek', currentTime: newTime });
+        if (isSynced) {
+            const v1Target = newTime - (syncPoint2 || 0) - (delay || 0) + (syncPoint1 || 0);
+            if (!isNaN(v1Target)) {
+                const v1Dur = video1.duration || 0;
+                const clamped = Math.max(0, Math.min(v1Dur || Number.MAX_SAFE_INTEGER, v1Target));
+                if (v1Dur > 0) video1.currentTime = clamped;
+            }
+            const v1Now = video1.currentTime || 0;
+            syncPoint2 = newTime - (v1Now - (syncPoint1 || 0)) - (delay || 0);
+            lastSyncTime = Date.now();
+            dispatchToPeer({ type: 'player2-sync-meta', sync: buildPlayer2SyncMeta() });
+        }
+        schedulePersistElectronPlaybackSession(0);
+        return;
+    }
+
     video.currentTime = newTime;
 
     // Sync-aware seeking
@@ -941,8 +2236,14 @@ function seekVideo(event, video, progressId) {
         if (video === video1) {
             // When seeking video1, move video2 according to current mapping
             const syncedTime = newTime - syncPoint1 + syncPoint2 + delay;
-            if (syncedTime >= 0 && syncedTime <= (video2.duration || Infinity)) {
-                video2.currentTime = syncedTime;
+            const maxDuration = isElectronWindowMode() ? (getPlayer2Duration() || Infinity) : (video2.duration || Infinity);
+            if (syncedTime >= 0 && syncedTime <= maxDuration) {
+                if (isElectronWindowMode()) {
+                    remotePlayer2State.currentTime = syncedTime;
+                    dispatchToPeer({ type: 'player2-seek', currentTime: syncedTime });
+                } else {
+                    video2.currentTime = syncedTime;
+                }
                 lastSyncTime = Date.now(); // prevent immediate re-sync
             }
         } else if (video === video2) {
@@ -961,14 +2262,27 @@ function seekVideo(event, video, progressId) {
             lastSyncTime = Date.now(); // small cooldown before next correction
         }
     }
+    schedulePersistElectronPlaybackSession(0);
 }
 
 function changeSpeed(video, speed) {
     const rate = parseFloat(speed);
     globalPlaybackRate = rate; // persist for future loads
+    if (isPlayer2Window() && video === video2) {
+        try { video2.playbackRate = rate; } catch { }
+        syncSpeedSelects(rate);
+        lsSet(LS_KEYS.rate, String(rate));
+        dispatchToPeer({ type: 'player2-request-speed', rate });
+        return;
+    }
     // Always keep both players and both selects in lockstep
     try { video1.playbackRate = rate; } catch { }
-    try { video2.playbackRate = rate; } catch { }
+    if (isElectronWindowMode()) {
+        remotePlayer2State.playbackRate = rate;
+        dispatchToPeer({ type: 'player2-speed', rate });
+    } else {
+        try { video2.playbackRate = rate; } catch { }
+    }
     syncSpeedSelects(rate);
     // Persist user choice
     lsSet(LS_KEYS.rate, String(rate));
@@ -1053,18 +2367,79 @@ function updateProgress(video, progressBarId, timeDisplayId) {
         const percentage = (video.currentTime / video.duration) * 100;
         progressBar.style.width = percentage + '%';
 
-        const current = formatTime(video.currentTime);
-        const total = formatTime(video.duration);
-        timeDisplay.textContent = `${current} / ${total}`;
+        const timeDisplayOptions = getTimeDisplayOptions(video.duration);
+        const current = formatTime(video.currentTime, timeDisplayOptions);
+        const total = formatTime(video.duration, timeDisplayOptions);
+        renderTimeDisplay(timeDisplay, current, total);
     }
 }
 
-function formatTime(seconds) {
-    const hours = Math.floor(seconds / 3600);
-    const minutes = Math.floor((seconds % 3600) / 60);
-    const secs = Math.floor(seconds % 60);
+function getTimeDisplayOptions(duration) {
+    const totalSeconds = Math.max(0, Number(duration) || 0);
+    const includeHours = totalSeconds >= 3600;
+    const totalMinutes = Math.floor(totalSeconds / 60);
+    const minuteDigits = includeHours ? 2 : Math.max(1, String(totalMinutes).length);
+    return { includeHours, minuteDigits };
+}
 
-    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+function formatTime(seconds, options = {}) {
+    const totalFrames = Math.max(0, Math.round((Number(seconds) || 0) * FRAME_RATE));
+    const frame = totalFrames % FRAME_RATE;
+    const totalSeconds = Math.floor(totalFrames / FRAME_RATE);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const secs = totalSeconds % 60;
+    const frameText = frame.toString().padStart(2, '0');
+    const secondsText = secs.toString().padStart(2, '0');
+
+    if (options.includeHours) {
+        return {
+            time: `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${secondsText}`,
+            frame: frameText
+        };
+    }
+
+    const totalMinutes = Math.floor(totalSeconds / 60);
+    const minuteDigits = Number.isFinite(options.minuteDigits) ? options.minuteDigits : 1;
+    return {
+        time: `${totalMinutes.toString().padStart(minuteDigits, '0')}:${secondsText}`,
+        frame: frameText
+    };
+}
+
+function createTimeSegment(parts, options = {}) {
+    const segment = document.createElement('span');
+    segment.className = 'time-segment';
+
+    const main = document.createElement('span');
+    main.className = 'time-main';
+    main.textContent = parts.time;
+
+    if (options.showFrame === false) {
+        segment.append(main);
+        return segment;
+    }
+
+    const frame = document.createElement('span');
+    frame.className = 'time-frame';
+    frame.textContent = `.${parts.frame}`;
+
+    segment.append(main, frame);
+    return segment;
+}
+
+function renderTimeDisplay(timeDisplay, current, total) {
+    if (!timeDisplay) return;
+
+    const separator = document.createElement('span');
+    separator.className = 'time-separator';
+    separator.textContent = ' / ';
+
+    timeDisplay.replaceChildren(
+        createTimeSegment(current),
+        separator,
+        createTimeSegment(total, { showFrame: false })
+    );
 }
 
 function loadSubtitle(event, playerNum) {
@@ -1072,16 +2447,44 @@ function loadSubtitle(event, playerNum) {
     if (file && file.name.endsWith('.srt')) {
         const reader = new FileReader();
         reader.onload = function (e) {
-            const srtContent = e.target.result;
-            const parsedSubtitles = parseSRT(srtContent);
-
-            if (playerNum === 1) {
-                subtitles1 = parsedSubtitles;
-            } else {
-                subtitles2 = parsedSubtitles;
-            }
+            applySubtitleContent(playerNum, e.target.result, file.path || null, {
+                persist: !!file.path
+            });
         };
         reader.readAsText(file);
+    }
+}
+
+async function applySubtitleContent(playerNum, srtContent, localPath, options = {}) {
+    const parsedSubtitles = parseSRT(srtContent);
+    const subtitlePath = typeof localPath === 'string' && localPath ? localPath : null;
+
+    if (playerNum === 1) {
+        subtitles1 = parsedSubtitles;
+        lastSubtitlePath1 = subtitlePath;
+        updateSubtitles(1, video1.currentTime || 0);
+        if (options.persist !== false && electronAPI && subtitlePath) {
+            try { await electronAPI.setLastSubtitle(VIDEO_PLAYER_IDS.video1, subtitlePath); } catch { }
+        }
+        return;
+    }
+
+    subtitles2 = parsedSubtitles;
+    lastSubtitlePath2 = subtitlePath;
+    updateSubtitles(2, getPlayer2Time());
+
+    if (options.persist !== false && electronAPI && subtitlePath) {
+        try { await electronAPI.setLastSubtitle(VIDEO_PLAYER_IDS.video2, subtitlePath); } catch { }
+    }
+
+    if (isMainWindow() && isElectronWindowMode()) {
+        mergeRemotePlayer2State({
+            subtitles: Array.isArray(subtitles2) ? [...subtitles2] : [],
+            subtitlePath: lastSubtitlePath2
+        });
+        sendHydrateToPlayer2Window();
+    } else {
+        maybeBroadcastPlayer2State('subtitle-load');
     }
 }
 
@@ -1133,23 +2536,40 @@ function parseSRT(srtContent) {
 }
 
 function toggleSubtitles(playerNum) {
-    if (playerNum === 1) {
-        subtitlesEnabled1 = !subtitlesEnabled1;
-        const btn = document.getElementById('subtitleBtn1');
-        const display = document.getElementById('subtitle1Display');
+    const current = playerNum === 1 ? subtitlesEnabled1 : subtitlesEnabled2;
+    setSubtitlesEnabled(playerNum, !current, { notify: true });
+}
 
-        if (btn) btn.style.background = subtitlesEnabled1 ? 'rgba(255,255,255,0.3)' : 'none';
-        if (!subtitlesEnabled1) {
+function setSubtitlesEnabled(playerNum, enabled, options = {}) {
+    const nextEnabled = enabled !== false;
+    const btn = document.getElementById(`subtitleBtn${playerNum}`);
+    const display = document.getElementById(playerNum === 1 ? 'subtitle1Display' : 'subtitle2Display');
+
+    if (playerNum === 1) {
+        subtitlesEnabled1 = nextEnabled;
+    } else {
+        subtitlesEnabled2 = nextEnabled;
+    }
+
+    if (btn) btn.style.background = nextEnabled ? 'rgba(255,255,255,0.3)' : 'none';
+    if (display) {
+        if (nextEnabled) {
+            updateSubtitles(playerNum, playerNum === 1 ? (video1.currentTime || 0) : getPlayer2Time());
+        } else {
             display.style.display = 'none';
         }
-    } else {
-        subtitlesEnabled2 = !subtitlesEnabled2;
-        const btn = document.getElementById('subtitleBtn2');
-        const display = document.getElementById('subtitle2Display');
+    }
 
-        if (btn) btn.style.background = subtitlesEnabled2 ? 'rgba(255,255,255,0.3)' : 'none';
-        if (!subtitlesEnabled2) {
-            display.style.display = 'none';
+    if (options.notify) {
+        showControlNotification(`Subtitles ${playerNum} ${nextEnabled ? 'On' : 'Off'}`);
+    }
+
+    if (playerNum === 2 && options.broadcast !== false) {
+        if (isMainWindow() && isElectronWindowMode()) {
+            mergeRemotePlayer2State({ subtitlesEnabled: nextEnabled });
+            dispatchToPeer({ type: 'player2-subtitles-enabled', enabled: nextEnabled });
+        } else {
+            maybeBroadcastPlayer2State('subtitle-toggle');
         }
     }
 }
@@ -1216,6 +2636,96 @@ function updateSubtitles(playerNum, currentTime) {
 }
 
 function swapVideos() {
+    if (isPlayer2Window()) {
+        dispatchToPeer({ type: 'player2-request-swap' });
+        return;
+    }
+
+    if (isElectronWindowMode()) {
+        const player1State = {
+            src: video1.currentSrc || video1.src || '',
+            filePath: lastVideoPath1 || null,
+            currentTime: video1.currentTime || 0,
+            duration: video1.duration || 0,
+            paused: !!video1.paused,
+            volume: Number.isFinite(video1.volume) ? video1.volume : 1,
+            muted: !!video1.muted,
+            playbackRate: Number.isFinite(video1.playbackRate) ? video1.playbackRate : globalPlaybackRate,
+            subtitles: Array.isArray(subtitles1) ? [...subtitles1] : [],
+            subtitlePath: lastSubtitlePath1 || null,
+            subtitlesEnabled: subtitlesEnabled1 !== false,
+            subtitleFontScale: subtitleFontScale1,
+            tf: cloneTf(tf1)
+        };
+        const player2State = buildPlayer2Snapshot();
+        const tempSyncPoint1 = syncPoint1;
+        const tempSyncPoint2 = syncPoint2;
+        const wasSynced = isSynced;
+
+        subtitles1 = Array.isArray(player2State.subtitles) ? [...player2State.subtitles] : [];
+        subtitles2 = Array.isArray(player1State.subtitles) ? [...player1State.subtitles] : [];
+        lastSubtitlePath1 = player2State.subtitlePath || null;
+        lastSubtitlePath2 = player1State.subtitlePath || null;
+        subtitlesEnabled1 = player2State.subtitlesEnabled !== false;
+        subtitlesEnabled2 = player1State.subtitlesEnabled !== false;
+        setSubtitleFontScale(1, player2State.subtitleFontScale, { notify: false, broadcast: false });
+        setSubtitleFontScale(2, player1State.subtitleFontScale, { notify: false, broadcast: false });
+        tf1 = isValidTf(player2State.tf) ? cloneTf(player2State.tf) : cloneTf(tf1);
+        tf2 = isValidTf(player1State.tf) ? cloneTf(player1State.tf) : cloneTf(tf2);
+        lastVideoPath1 = player2State.filePath || null;
+        lastVideoPath2 = player1State.filePath || null;
+
+        if (electronAPI) {
+            if (lastVideoPath1) electronAPI.setLastVideo(VIDEO_PLAYER_IDS.video1, lastVideoPath1).catch(() => { });
+            if (lastVideoPath2) electronAPI.setLastVideo(VIDEO_PLAYER_IDS.video2, lastVideoPath2).catch(() => { });
+            if (lastSubtitlePath1) electronAPI.setLastSubtitle(VIDEO_PLAYER_IDS.video1, lastSubtitlePath1).catch(() => { });
+            if (lastSubtitlePath2) electronAPI.setLastSubtitle(VIDEO_PLAYER_IDS.video2, lastSubtitlePath2).catch(() => { });
+        }
+
+        const restoreMain = async () => {
+            if (player2State.src) {
+                await loadVideoFromSource(video1, player2State.src, VIDEO_PLAYER_IDS.video1, player2State.filePath, { persist: false });
+            } else {
+                try { video1.pause(); } catch { }
+                video1.removeAttribute('src');
+                video1.load();
+            }
+            if (player2State.src) {
+                const once = () => {
+                    try { video1.currentTime = player2State.currentTime || 0; } catch { }
+                    video1.volume = Number.isFinite(player2State.volume) ? player2State.volume : 1;
+                    video1.muted = !!player2State.muted;
+                    try { video1.playbackRate = Number.isFinite(player2State.playbackRate) ? player2State.playbackRate : globalPlaybackRate; } catch { }
+                    if (player2State.paused === false) {
+                        video1.play().catch(() => { });
+                    } else {
+                        try { video1.pause(); } catch { }
+                    }
+                    applyTransform(1);
+                    updateSubtitles(1, video1.currentTime || 0);
+                };
+                video1.addEventListener('loadedmetadata', once, { once: true });
+                setTimeout(once, 250);
+            }
+        };
+
+        restoreMain();
+        remotePlayer2State = {
+            ...player1State,
+            subtitles: Array.isArray(player1State.subtitles) ? [...player1State.subtitles] : [],
+            tf: cloneTf(player1State.tf)
+        };
+        sendHydrateToPlayer2Window();
+
+        if (wasSynced) {
+            syncPoint1 = tempSyncPoint2;
+            syncPoint2 = tempSyncPoint1;
+            isSynced = true;
+        }
+        dispatchToPeer({ type: 'player2-sync-meta', sync: buildPlayer2SyncMeta() });
+        return;
+    }
+
     // Store current states
     const video1Src = video1.src;
     const video2Src = video2.src;
@@ -1233,8 +2743,12 @@ function swapVideos() {
     // Store subtitle states
     const tempSubtitles1 = [...subtitles1];
     const tempSubtitles2 = [...subtitles2];
+    const tempSubtitlePath1 = lastSubtitlePath1;
+    const tempSubtitlePath2 = lastSubtitlePath2;
     const tempSubtitlesEnabled1 = subtitlesEnabled1;
     const tempSubtitlesEnabled2 = subtitlesEnabled2;
+    const tempSubtitleFontScale1 = subtitleFontScale1;
+    const tempSubtitleFontScale2 = subtitleFontScale2;
 
     // Store sync points if they exist
     const tempSyncPoint1 = syncPoint1;
@@ -1255,6 +2769,8 @@ function swapVideos() {
     if (electronAPI) {
         if (lastVideoPath1) electronAPI.setLastVideo(VIDEO_PLAYER_IDS.video1, lastVideoPath1).catch(() => { });
         if (lastVideoPath2) electronAPI.setLastVideo(VIDEO_PLAYER_IDS.video2, lastVideoPath2).catch(() => { });
+        if (tempSubtitlePath2) electronAPI.setLastSubtitle(VIDEO_PLAYER_IDS.video1, tempSubtitlePath2).catch(() => { });
+        if (tempSubtitlePath1) electronAPI.setLastSubtitle(VIDEO_PLAYER_IDS.video2, tempSubtitlePath1).catch(() => { });
     }
 
     // Wait for videos to load then restore states
@@ -1303,8 +2819,12 @@ function swapVideos() {
         // Swap subtitles
         subtitles1 = tempSubtitles2;
         subtitles2 = tempSubtitles1;
+        lastSubtitlePath1 = tempSubtitlePath2;
+        lastSubtitlePath2 = tempSubtitlePath1;
         subtitlesEnabled1 = tempSubtitlesEnabled2;
         subtitlesEnabled2 = tempSubtitlesEnabled1;
+        setSubtitleFontScale(1, tempSubtitleFontScale2, { notify: false, broadcast: false });
+        setSubtitleFontScale(2, tempSubtitleFontScale1, { notify: false, broadcast: false });
 
         // Update subtitle button states (buttons may not exist)
         const _b1 = document.getElementById('subtitleBtn1');
@@ -1352,6 +2872,7 @@ function changeVolume(video, volume, muteBtnId) {
     } else {
         muteBtn.textContent = '🔊';
     }
+    if (isPlayer2Window() && video === video2) maybeBroadcastPlayer2State('volume-set');
 }
 
 function toggleMute(video, muteBtnId, sliderId) {
@@ -1367,16 +2888,30 @@ function toggleMute(video, muteBtnId, sliderId) {
         video.muted = true;
         muteBtn.textContent = '🔇';
     }
+    if (isPlayer2Window() && video === video2) maybeBroadcastPlayer2State('mute-toggle');
 }
 
 function setSyncPoint() {
-    if (video1.duration && video2.duration) {
+    if (isPlayer2Window()) {
+        dispatchToPeer({ type: 'player2-request-set-sync' });
+        return;
+    }
+
+    const player2Duration = getPlayer2Duration();
+    if (video1.duration && player2Duration) {
         syncPoint1 = video1.currentTime;
-        syncPoint2 = video2.currentTime;
+        syncPoint2 = getPlayer2Time();
         isSynced = true;
 
         // Start video2 from its sync point when video1 plays
-        video2.currentTime = syncPoint2;
+        if (isElectronWindowMode()) {
+            remotePlayer2State.currentTime = syncPoint2;
+            dispatchToPeer({ type: 'player2-seek', currentTime: syncPoint2 });
+            remotePlayer2State.paused = false;
+            dispatchToPeer({ type: 'player2-play' });
+        } else {
+            video2.currentTime = syncPoint2;
+        }
 
         // Ensure both players are playing
         if (video1.paused) {
@@ -1385,19 +2920,30 @@ function setSyncPoint() {
             if (pb1) pb1.textContent = '⏸';
         }
         // Always start video2
-        video2.play();
-        const pb2 = document.getElementById('playBtn2');
-        if (pb2) pb2.textContent = '⏸';
+        if (!isElectronWindowMode()) {
+            video2.play();
+            const pb2 = document.getElementById('playBtn2');
+            if (pb2) pb2.textContent = '⏸';
+        }
 
         // (sync status UI removed)
 
         // Hide sync controls after setting sync point
         const syncControls = document.getElementById('syncControls');
         if (syncControls) syncControls.style.display = 'none';
+        if (isElectronWindowMode()) {
+            dispatchToPeer({ type: 'player2-sync-meta', sync: buildPlayer2SyncMeta() });
+        }
+        schedulePersistElectronPlaybackSession(0);
     }
 }
 
 function clearSyncPoint() {
+    if (isPlayer2Window()) {
+        dispatchToPeer({ type: 'player2-request-clear-sync' });
+        return;
+    }
+
     syncPoint1 = null;
     syncPoint2 = null;
     isSynced = false;
@@ -1405,26 +2951,65 @@ function clearSyncPoint() {
 
     const syncControls = document.getElementById('syncControls');
     if (syncControls) syncControls.style.display = '';
+    if (isElectronWindowMode()) {
+        dispatchToPeer({ type: 'player2-sync-meta', sync: buildPlayer2SyncMeta() });
+    }
+    schedulePersistElectronPlaybackSession(0);
+}
+
+function resetTimestampsAndClearSync() {
+    if (isPlayer2Window()) {
+        dispatchToPeer({ type: 'player2-request-reset-timestamps' });
+        return;
+    }
+
+    clearSyncPoint();
+
+    try { video1.currentTime = 0; } catch { }
+    updateProgress(video1, 'progressBar1', 'timeDisplay1');
+    updateSubtitles(1, 0);
+
+    if (isElectronWindowMode()) {
+        mergeRemotePlayer2State({ currentTime: 0 });
+        dispatchToPeer({ type: 'player2-seek', currentTime: 0 });
+    } else {
+        try { video2.currentTime = 0; } catch { }
+        updateProgress(video2, 'progressBar2', 'timeDisplay2');
+        updateSubtitles(2, 0);
+    }
+
+    lastSyncTime = 0;
+    schedulePersistElectronPlaybackSession(0);
 }
 
 // (Clear Sync and Delay controls removed)
 
 let lastSyncTime = 0;
-const SYNC_THRESHOLD = 0.5; // Only sync if difference is more than 0.5 seconds
-const SYNC_INTERVAL = 100; // Minimum time between sync adjustments (ms)
+const SYNC_THRESHOLD = 0.9; // Window mode needs a wider tolerance to avoid visible overcorrection.
+const SYNC_INTERVAL = 350; // Avoid hammering player2 with high-frequency seek corrections.
 
 function handleSync() {
     if (isSynced && !video1.paused) {
         const now = Date.now();
         const targetTime = (video1.currentTime - syncPoint1) + syncPoint2 + delay;
-        const timeDifference = Math.abs(video2.currentTime - targetTime);
+        const currentPlayer2Time = getPlayer2Time();
+        const timeDifference = Math.abs(currentPlayer2Time - targetTime);
 
         // Only sync if there's a significant difference and enough time has passed
         if (targetTime >= 0 &&
             timeDifference > SYNC_THRESHOLD &&
             now - lastSyncTime > SYNC_INTERVAL) {
 
-            video2.currentTime = targetTime;
+            if (isElectronWindowMode()) {
+                mergeRemotePlayer2State({
+                    currentTime: targetTime,
+                    paused: false,
+                    playbackRate: globalPlaybackRate
+                });
+                dispatchToPeer({ type: 'player2-seek', currentTime: targetTime });
+            } else {
+                video2.currentTime = targetTime;
+            }
             lastSyncTime = now;
         }
     }
@@ -1468,6 +3053,46 @@ function showControlNotification(message) {
 }
 
 // ================== Keyboard ==================
+function getFrameStepDirectionFromEvent(event, options = {}) {
+    if (!options.ignoreModifiers && (event.shiftKey || event.ctrlKey || event.altKey || event.metaKey)) return 0;
+    if (event.code === 'Period' || event.key === '.') return 1;
+    if (event.code === 'Comma' || event.key === ',') return -1;
+    return 0;
+}
+
+function updateFrameStepHeldKey(event, isHeld) {
+    const direction = getFrameStepDirectionFromEvent(event, { ignoreModifiers: true });
+    if (direction > 0) frameStepHeldKeys.period = !!isHeld;
+    if (direction < 0) frameStepHeldKeys.comma = !!isHeld;
+    if (direction) revealPlayerControls();
+    return direction;
+}
+
+function getHeldFrameStepDirection(preferredDirection = 0) {
+    if (frameStepHeldKeys.period && !frameStepHeldKeys.comma) return 1;
+    if (frameStepHeldKeys.comma && !frameStepHeldKeys.period) return -1;
+    if (frameStepHeldKeys.period && frameStepHeldKeys.comma) {
+        return preferredDirection || frameStepHoldDirection || 1;
+    }
+    return 0;
+}
+
+function stopFrameStepHold() {
+    frameStepHeldKeys.comma = false;
+    frameStepHeldKeys.period = false;
+    frameStepHoldDirection = 0;
+}
+
+function handleKeyboardKeyup(event) {
+    const direction = updateFrameStepHeldKey(event, false);
+    if (!direction) return;
+    if (isPlayer2Window() && activeVideo === 1) {
+        requestMainKeyboardControl('stop-frame-step', { direction });
+        return;
+    }
+    frameStepHoldDirection = getHeldFrameStepDirection(frameStepHoldDirection);
+}
+
 function handleKeyboard(event) {
     if (isProfileMenuOpen() && event.key === 'Escape') {
         event.preventDefault();
@@ -1494,6 +3119,19 @@ function handleKeyboard(event) {
     if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
 
     if (isProfileMenuOpen()) return;
+
+    if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey && event.code === 'KeyZ') {
+        event.preventDefault();
+        undoLastAction();
+        return;
+    }
+
+    if (((event.ctrlKey || event.metaKey) && !event.altKey && event.code === 'KeyY')
+        || ((event.ctrlKey || event.metaKey) && event.shiftKey && !event.altKey && event.code === 'KeyZ')) {
+        event.preventDefault();
+        redoLastAction();
+        return;
+    }
 
     // Electron zoom shortcuts (mirror browser behavior)
     if ((event.ctrlKey || event.metaKey) && !event.altKey) {
@@ -1532,9 +3170,47 @@ function handleKeyboard(event) {
         }
     }
 
+    // Ctrl+Shift+P: reset both timestamps to 0 and clear sync
+    if (event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey && event.code === 'KeyP') {
+        event.preventDefault();
+        if (requestMainKeyboardControl('reset-timestamps')) return;
+        recordUndoableAction('Reset Timestamps', resetTimestampsAndClearSync);
+        return;
+    }
+
+    if (!event.ctrlKey && !event.altKey && !event.metaKey) {
+        const key = String(event.key || '');
+        const code = String(event.code || '');
+
+        if (key === '+' || key === '=' || code === 'NumpadAdd') {
+            event.preventDefault();
+            if (requestMainKeyboardControl('subtitle-font-size', { direction: 1 })) return;
+            adjustSubtitleFontScale(activeVideo, 1);
+            return;
+        }
+
+        if (key === '-' || code === 'NumpadSubtract') {
+            event.preventDefault();
+            if (requestMainKeyboardControl('subtitle-font-size', { direction: -1 })) return;
+            adjustSubtitleFontScale(activeVideo, -1);
+            return;
+        }
+
+        if (key.toLowerCase() === 'c') {
+            event.preventDefault();
+            if (requestMainKeyboardControl('toggle-subtitles')) return;
+            toggleSubtitles(activeVideo);
+            return;
+        }
+    }
+
     // Space & arrows (existing behavior)
     if (event.key === ' ') {
         event.preventDefault();
+        if (isPlayer2Window() && activeVideo === 1) {
+            requestMainKeyboardControl('toggle-play');
+            return;
+        }
         const activeVid = activeVideo === 1 ? video1 : video2;
         const activeBtnId = activeVideo === 1 ? 'playBtn1' : 'playBtn2';
         togglePlay(activeVid, activeBtnId);
@@ -1543,8 +3219,10 @@ function handleKeyboard(event) {
     // "/" key: Toggle which video is controlled by keyboard shortcuts
     if (event.key === '/') {
         event.preventDefault();
-        activeVideo = activeVideo === 1 ? 2 : 1;
-        showControlNotification(`Controlling Video ${activeVideo}`);
+        setActiveVideo(activeVideo === 1 ? 2 : 1, { broadcast: true });
+        if (isPlayer2Window()) {
+            dispatchToPeer({ type: 'player2-request-active-video', activeVideo });
+        }
         return;
     }
     // "'" key: Swap videos
@@ -1556,13 +3234,15 @@ function handleKeyboard(event) {
     // Ctrl+Shift+Enter: Remove sync and allow setting a new sync point
     if (event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey && event.key === 'Enter') {
         event.preventDefault();
-        clearSyncPoint();
+        if (requestMainKeyboardControl('clear-sync')) return;
+        recordUndoableAction('Clear Sync', clearSyncPoint);
         return;
     }
     // Enter: Set Sync Point (only before sync is set)
     if (event.key === 'Enter') {
         event.preventDefault();
-        if (!isSynced) setSyncPoint();
+        if (requestMainKeyboardControl('set-sync')) return;
+        if (!isSynced) recordUndoableAction('Set Sync Point', setSyncPoint);
         return;
     }
     // Toggle fullscreen with "F"
@@ -1573,35 +3253,47 @@ function handleKeyboard(event) {
     }
     if (event.key === 'ArrowLeft') {
         event.preventDefault();
+        if (isPlayer2Window() && activeVideo === 1) {
+            requestMainKeyboardControl('skip-time', { seconds: -5 });
+            return;
+        }
         skipTime(-5);
         return;
     }
     if (event.key === 'ArrowRight') {
         event.preventDefault();
+        if (isPlayer2Window() && activeVideo === 1) {
+            requestMainKeyboardControl('skip-time', { seconds: 5 });
+            return;
+        }
         skipTime(5);
         return;
     }
 
-    // '.' next frame, ',' previous frame (no Shift)
-    if (!event.shiftKey && (event.code === 'Period' || event.key === '.')) {
+    // "." next frame, "," previous frame. Holding either key steps continuously.
+    const frameStepDirection = getFrameStepDirectionFromEvent(event);
+    if (frameStepDirection) {
         event.preventDefault();
-        stepFrame(+1);
-        return;
-    }
-    if (!event.shiftKey && (event.code === 'Comma' || event.key === ',')) {
-        event.preventDefault();
-        stepFrame(-1);
+        revealPlayerControls();
+        updateFrameStepHeldKey(event, true);
+        if (isPlayer2Window() && activeVideo === 1) {
+            requestMainKeyboardControl('step-frame', { direction: frameStepDirection });
+            return;
+        }
+        startFrameStepHold(frameStepDirection);
         return;
     }
 
     // Shift + '.' increase speed, Shift + ',' decrease speed
     if (event.shiftKey && (event.code === 'Period' || event.key === '.' || event.key === '>')) {
         event.preventDefault();
+        if (requestMainKeyboardControl('speed', { direction: 1 })) return;
         bumpSpeed(+1);
         return;
     }
     if (event.shiftKey && (event.code === 'Comma' || event.key === ',' || event.key === '<')) {
         event.preventDefault();
+        if (requestMainKeyboardControl('speed', { direction: -1 })) return;
         bumpSpeed(-1);
         return;
     }
@@ -1610,6 +3302,14 @@ function handleKeyboard(event) {
     const code = event.code;
     const alt = event.altKey;
     const ctrl = event.ctrlKey;
+
+    if (isPlayer2Window() && activeVideo === 1 && String(code || '').startsWith('Numpad')) {
+        if (requestMainKeyboardControl('transform-key', { code, alt, ctrl })) {
+            event.preventDefault();
+            return;
+        }
+    }
+
     const tf = activeVideo === 1 ? tf1 : tf2;
 
     switch (code) {
@@ -1704,11 +3404,19 @@ function handleKeyboard(event) {
 }
 
 function skipTime(seconds) {
+    const controllingRemotePlayer2 = isElectronWindowMode() && activeVideo === 2;
     const activeVid = activeVideo === 1 ? video1 : video2;
     const otherVid = activeVideo === 1 ? video2 : video1;
+    const activeDuration = controllingRemotePlayer2 ? getPlayer2Duration() : (activeVid.duration || 0);
+    const activeCurrentTime = controllingRemotePlayer2 ? getPlayer2Time() : (activeVid.currentTime || 0);
+    const newTime = Math.max(0, Math.min(activeDuration || 0, activeCurrentTime + seconds));
 
-    const newTime = Math.max(0, Math.min(activeVid.duration || 0, (activeVid.currentTime || 0) + seconds));
-    activeVid.currentTime = newTime;
+    if (controllingRemotePlayer2) {
+        remotePlayer2State.currentTime = newTime;
+        dispatchToPeer({ type: 'player2-seek', currentTime: newTime });
+    } else {
+        activeVid.currentTime = newTime;
+    }
 
     if (isSynced) {
         // Calculate synced time for the other video
@@ -1720,20 +3428,104 @@ function skipTime(seconds) {
             syncedTime = newTime - syncPoint2 - delay + syncPoint1;
         }
 
-        if (syncedTime >= 0 && syncedTime <= (otherVid.duration || 0)) {
-            otherVid.currentTime = syncedTime;
+        const otherDuration = activeVideo === 1 && isElectronWindowMode() ? getPlayer2Duration() : (otherVid.duration || 0);
+        if (syncedTime >= 0 && syncedTime <= otherDuration) {
+            if (activeVideo === 1 && isElectronWindowMode()) {
+                remotePlayer2State.currentTime = syncedTime;
+                dispatchToPeer({ type: 'player2-seek', currentTime: syncedTime });
+            } else {
+                otherVid.currentTime = syncedTime;
+            }
             lastSyncTime = Date.now(); // Update last sync time to prevent immediate re-sync
         }
     }
+    schedulePersistElectronPlaybackSession(0);
 }
 
-// Frame stepping (approximate). Uses 1/30s per frame.
-const FRAME_STEP_SECONDS = 1 / 30;
-function stepFrame(direction) {
+// Frame stepping (approximate). Uses 1/60s per frame.
+const FRAME_STEP_SECONDS = 1 / FRAME_RATE;
+function delayMs(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function waitForVideoSeek(video, timeoutMs = FRAME_STEP_SEEK_TIMEOUT_MS) {
+    if (!video) return Promise.resolve();
+    return new Promise((resolve) => {
+        let done = false;
+        const finish = () => {
+            if (done) return;
+            done = true;
+            video.removeEventListener('seeked', finish);
+            resolve();
+        };
+
+        if (!video.seeking) {
+            requestAnimationFrame(finish);
+            return;
+        }
+
+        video.addEventListener('seeked', finish, { once: true });
+        setTimeout(finish, timeoutMs);
+    });
+}
+
+function updateVideoAfterManualSeek(videoNum) {
+    if (videoNum === 1) {
+        updateProgress(video1, 'progressBar1', 'timeDisplay1');
+        updateSubtitles(1, video1.currentTime || 0);
+        return;
+    }
+    updateProgress(video2, 'progressBar2', 'timeDisplay2');
+    updateSubtitles(2, video2.currentTime || 0);
+}
+
+function startFrameStepHold(direction) {
+    revealPlayerControls();
+    if (direction > 0) frameStepHeldKeys.period = true;
+    if (direction < 0) frameStepHeldKeys.comma = true;
+    frameStepHoldDirection = direction >= 0 ? 1 : -1;
+    if (frameStepHoldRunning) return;
+    runFrameStepHold();
+}
+
+async function runFrameStepHold() {
+    frameStepHoldRunning = true;
+    try {
+        while (frameStepHoldDirection) {
+            revealPlayerControls();
+            const direction = frameStepHoldDirection;
+            await stepFrame(direction, { waitForSeek: true });
+            frameStepHoldDirection = getHeldFrameStepDirection(direction);
+            if (frameStepHoldDirection) {
+                await delayMs(FRAME_STEP_HOLD_DELAY_MS);
+            }
+        }
+    } finally {
+        frameStepHoldRunning = false;
+    }
+}
+
+async function stepFrame(direction, options = {}) {
     try { video1.pause(); } catch { }
     try { video2.pause(); } catch { }
+    if (isElectronWindowMode()) {
+        remotePlayer2State.paused = true;
+        dispatchToPeer({ type: 'player2-pause' });
+    }
+    const wasRemotePlayer2 = isElectronWindowMode() && activeVideo === 2;
+    const localVideoNum = activeVideo;
+    const localVideo = localVideoNum === 1 ? video1 : video2;
     const step = (direction >= 0 ? 1 : -1) * FRAME_STEP_SECONDS;
     skipTime(step);
+    if (!wasRemotePlayer2) {
+        updateVideoAfterManualSeek(localVideoNum);
+        if (options.waitForSeek) {
+            await waitForVideoSeek(localVideo);
+            updateVideoAfterManualSeek(localVideoNum);
+        }
+    } else if (options.waitForSeek) {
+        await delayMs(FRAME_STEP_HOLD_DELAY_MS);
+    }
 }
 
 function initializeDragging() {

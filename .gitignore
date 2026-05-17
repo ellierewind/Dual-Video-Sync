@@ -1,3 +1,6 @@
 electron/node_modules/
 electron/dist/
 dist/
+/electron/dist-fontsize
+/electron/dist-latest
+/electron/dist-syncfix

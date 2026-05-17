@@ -117,6 +117,24 @@
         .time-display {
             font-size: 14px;
             min-width: 80px;
+            display: inline-flex;
+            align-items: baseline;
+            white-space: nowrap;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .time-main {
+            color: #fff;
+        }
+
+        .time-frame {
+            color: rgba(255,255,255,0.58);
+            margin-left: 1px;
+        }
+
+        .time-separator {
+            color: rgba(255,255,255,0.45);
+            padding: 0 3px;
         }
 
         .speed-select {
@@ -223,7 +241,7 @@
             color: white;
             padding: 4px 8px;
             border-radius: 4px;
-            font-size: 64px;
+            font-size: calc(64px * var(--subtitle-font-scale, 1));
             font-weight: bold;
             text-align: center;
             max-width: 90%;
@@ -501,7 +519,11 @@
         .volume-slider::-moz-range-track { height: 4px; background: linear-gradient(90deg, var(--accent) 0 var(--vol, 100%), rgba(255,255,255,0.18) var(--vol, 100%) 100%); border-radius: 999px; }
         .volume-slider::-moz-range-thumb { width: 12px; height: 12px; background: #fff; border: 2px solid var(--accent); border-radius: 50%; box-shadow: 0 2px 6px rgba(0,0,0,0.3); }
 
-        .subtitle-display { border-radius: 10px; font-size: 36px; padding: 8px 14px; }
+        .subtitle-display {
+            border-radius: 10px;
+            font-size: calc(36px * var(--subtitle-font-scale, 1));
+            padding: 8px 14px;
+        }
         .overlay-subtitle-display { border-radius: 8px; }
 
         /* --- Alignment tweaks for overlay + sync panel --- */
@@ -553,7 +575,7 @@
             box-shadow: 0 10px 30px rgba(0,0,0,0.4);
             padding: 6px;
             display: none;
-            min-width: 150px;
+            min-width: 230px;
             z-index: 1100;
         }
         .dropdown.open > .dropdown-menu { display: block; }
@@ -570,3 +592,96 @@
             cursor: pointer;
         }
         .dropdown-item:hover { background: rgba(255,255,255,0.10); border-color: rgba(255,255,255,0.16); }
+        .dropdown-size-row {
+            display: grid;
+            grid-template-columns: minmax(92px, 1fr) 30px 48px 30px;
+            align-items: center;
+            gap: 6px;
+            color: var(--text);
+            padding: 6px 10px;
+            font-size: 14px;
+            white-space: nowrap;
+            box-sizing: border-box;
+        }
+        .dropdown-size-label {
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .dropdown-size-value {
+            text-align: center;
+            color: rgba(255,255,255,0.78);
+            font-size: 12px;
+        }
+        .dropdown-icon-btn {
+            width: 30px;
+            height: 30px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--text);
+            background: rgba(255,255,255,0.08);
+            border: 1px solid rgba(255,255,255,0.16);
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 18px;
+            line-height: 1;
+        }
+        .dropdown-icon-btn:hover {
+            background: rgba(255,255,255,0.14);
+            border-color: rgba(255,255,255,0.25);
+        }
+        .dropdown-icon-btn:disabled {
+            opacity: 0.4;
+            cursor: default;
+        }
+        .dropdown-icon-btn:disabled:hover {
+            background: rgba(255,255,255,0.08);
+            border-color: rgba(255,255,255,0.16);
+        }
+        .dropdown-divider {
+            height: 1px;
+            background: rgba(255,255,255,0.12);
+            margin: 6px 4px;
+        }
+        .electron-only {
+            display: none;
+        }
+        body.player2-window {
+            background: #000;
+        }
+        body.player2-window .main-player-container,
+        body.player2-window .sync-controls {
+            display: none !important;
+        }
+        body.player2-window .overlay-player {
+            position: fixed;
+            inset: 0;
+            width: 100vw;
+            height: 100vh;
+            top: 0;
+            left: 0;
+            right: auto;
+            border: none;
+            border-radius: 0;
+            box-shadow: none;
+        }
+        body.player2-window .resize-handle {
+            display: none;
+        }
+        body.player2-window .overlay-controls {
+            transform: translateY(100%);
+            padding: 12px 14px 14px;
+        }
+        body.player2-window .overlay-control-row {
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+        body.player2-window .overlay-control-row > div {
+            flex-wrap: wrap;
+        }
+        body.player2-window .overlay-subtitle-display {
+            bottom: 72px;
+            font-size: calc(42px * var(--subtitle-font-scale, 1));
+            max-width: 80%;
+        }
