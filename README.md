@@ -13,10 +13,11 @@ A local dual-video player that can run in a browser (`index.html`) or as an Elec
     -   Control speed (playback rate) globally or individually.
     -   Use on-screen speed up/down buttons on both players.
     -   Use keyboard shortcuts to step playback speed up to `4x`, with `0.1x` steps above `2x`.
+    -   Step forward or backward one frame at a time, including continuous stepping while a frame key is held.
     -   Volume control with fine granularity for both players.
     -   Mute/Unmute toggles.
 -   **Overlay Mode**: Secondary video can be resized, moved, and overlayed on the primary video.
--   **Subtitle Support**: Load `.srt` files for both videos with basic formatting support.
+-   **Subtitle Support**: Load `.srt` files for both videos with basic formatting support and responsive line wrapping.
 -   **Transform Controls**: (Keyboard shortcuts) Zoom, stretch, flip, and rotate videos.
 -   **Profiles**: Save/load multiple layout profiles (video transforms + overlay position/size).
 -   **Persistence**: Saves playback rate, transforms, overlay geometry, and profiles between sessions.
@@ -25,6 +26,9 @@ A local dual-video player that can run in a browser (`index.html`) or as an Elec
 
 -   **Remembers Last Videos** to automatically reopen the last video used in Player 1 and Player 2.
 -   **Remembers Playback Session** including the latest timestamps and sync point across app restarts.
+-   **Frame-rate-aware timestamps and stepping** using `ffprobe` metadata when available, with a `30 fps` fallback.
+-   **Popped-out Player 2 synchronization** for seeking, frame stepping, playback controls, and sync-point capture.
+-   **Paired window lifecycle** so closing either app window also closes its companion window.
 -   **Native file picker integration** for `Choose Video 1` / `Choose Video 2`.
 -   **Last-loaded video persistence** per player across app restarts.
 -   **Windows `.exe` packaging** via the `electron/` project.
@@ -39,9 +43,10 @@ A local dual-video player that can run in a browser (`index.html`) or as an Elec
     -   Click "Set Sync Point" to lock their relative timing.
 3.  **Controls**:
     -   Use the on-screen controls for playback, volume, and speed.
+    -   Use `.` and `,` to step one frame forward or backward; hold either key for continuous stepping.
     -   Use `Shift + .` and `Shift + ,` to raise or lower playback speed, up to `4x`.
     -   Mouse wheel over a video player adjusts its volume.
-    -   Double-click the main player to toggle fullscreen.
+    -   Double-click either player, or use its fullscreen button, to toggle fullscreen.
     -   `Enter` sets the sync point (only when not currently synced).
     -   `Ctrl + Shift + Enter` clears the current sync so you can set a new sync point.
     -   `Ctrl + Shift + P` resets both timestamps to `0` and clears the current sync.

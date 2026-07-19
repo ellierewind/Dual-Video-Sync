@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getLastSubtitle: (playerId) => ipcRenderer.invoke('prefs:get-last-subtitle', playerId),
   setLastSubtitle: (playerId, filePath) => ipcRenderer.invoke('prefs:set-last-subtitle', { playerId, filePath }),
   findSubtitleForVideo: (videoPath) => ipcRenderer.invoke('subtitle:find-for-video', videoPath),
+  probeVideoMetadata: (videoPath) => ipcRenderer.invoke('video:probe-metadata', videoPath),
   getPlaybackSession: () => ipcRenderer.invoke('prefs:get-playback-session'),
   setPlaybackSession: (session) => ipcRenderer.invoke('prefs:set-playback-session', session),
   getPlayer2Mode: () => ipcRenderer.invoke('prefs:get-player2-mode'),

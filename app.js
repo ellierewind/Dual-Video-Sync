@@ -20,9 +20,11 @@ let lastSubtitlePath1 = null;
 let lastSubtitlePath2 = null;
 const SUBTITLE_FONT_SCALE_STEP = 0.1;
 const SUBTITLE_FONT_SCALE_MIN = 0.1;
-const FRAME_RATE = 60;
-const FRAME_STEP_HOLD_DELAY_MS = 0;
+const DEFAULT_FRAME_RATE = 30;
+const FRAME_STEP_HOLD_START_DELAY_MS = 350;
 const FRAME_STEP_SEEK_TIMEOUT_MS = 900;
+let frameRate1 = DEFAULT_FRAME_RATE;
+let frameRate2 = DEFAULT_FRAME_RATE;
 // Global playback rate that persists across loads
 let globalPlaybackRate = 1;
 // Track which video is controlled by keyboard shortcuts (1 or 2)
@@ -52,6 +54,14 @@ let suppressPlayer2StateBroadcast = false;
 let remotePlayer2State = createEmptyPlayer2State();
 let frameStepHoldDirection = 0;
 let frameStepHoldRunning = false;
+let frameStepHoldStartTimer = null;
+let remoteFrameStepHoldDirection = 0;
+let remoteFrameStepHoldStartTimer = null;
+let remoteFrameStepHoldRunning = false;
+let remotePlayer2SeekCommandId = 0;
+const remotePlayer2SeekWaiters = new Map();
+let remotePlayer2StateRequestId = 0;
+const remotePlayer2StateWaiters = new Map();
 const frameStepHeldKeys = {
     comma: false,
     period: false
@@ -201,6 +211,7 @@ function createEmptyPlayer2State() {
         subtitlePath: null,
         subtitlesEnabled: true,
         subtitleFontScale: 1,
+        frameRate: DEFAULT_FRAME_RATE,
         tf: {
             zoom: 1,
             stretchX: 1,
@@ -262,6 +273,32 @@ function getPlayer2Duration() {
     return usesLocalPlayer2() ? (video2.duration || 0) : (remotePlayer2State.duration || 0);
 }
 
+function normalizeFrameRate(value) {
+    const fps = Number(value);
+    return Number.isFinite(fps) && fps > 0 ? fps : DEFAULT_FRAME_RATE;
+}
+
+function getFrameRateForPlayer(playerNum) {
+    return normalizeFrameRate(playerNum === 1 ? frameRate1 : frameRate2);
+}
+
+function setFrameRateForPlayer(playerNum, value) {
+    const nextRate = normalizeFrameRate(value);
+    if (playerNum === 1) {
+        frameRate1 = nextRate;
+    } else {
+        frameRate2 = nextRate;
+        if (isMainWindow() && isElectronWindowMode()) {
+            mergeRemotePlayer2State({ frameRate: nextRate });
+        }
+    }
+    return nextRate;
+}
+
+function getPlayerNumFromVideo(video) {
+    return video === video1 ? 1 : 2;
+}
+
 function isPlayer2Paused() {
     return usesLocalPlayer2() ? !!video2.paused : !!remotePlayer2State.paused;
 }
@@ -282,6 +319,7 @@ function buildPlayer2Snapshot() {
             subtitlePath: lastSubtitlePath2 || null,
             subtitlesEnabled: subtitlesEnabled2 !== false,
             subtitleFontScale: subtitleFontScale2,
+            frameRate: getFrameRateForPlayer(2),
             tf: cloneTf(tf2)
         };
     }
@@ -390,6 +428,19 @@ function recordUndoableAction(label, action) {
     return true;
 }
 
+async function recordSetSyncPoint() {
+    if (isPlayer2Window()) {
+        requestPlayer2SetSync();
+        return false;
+    }
+
+    if (isElectronWindowMode()) {
+        await requestFreshRemotePlayer2State();
+    }
+
+    return recordUndoableAction('Set Sync Point', setSyncPoint);
+}
+
 function undoLastAction() {
     if (isPlayer2Window()) {
         requestMainKeyboardControl('undo');
@@ -439,13 +490,54 @@ function setActiveVideo(nextVideo, options = {}) {
 
 function requestMainKeyboardControl(action, payload = {}) {
     if (!isPlayer2Window()) return false;
+    const localPlayer2State = action === 'set-sync' ? buildPlayer2SyncRequestState() : null;
     dispatchToPeer({
         type: 'player2-request-keyboard-control',
         action,
         activeVideo,
+        ...(localPlayer2State ? { player2State: localPlayer2State } : {}),
         ...payload
     });
     return true;
+}
+
+function buildPlayer2SyncRequestState() {
+    if (!isPlayer2Window()) return null;
+    return {
+        currentTime: Number.isFinite(video2?.currentTime) ? video2.currentTime : 0,
+        duration: Number.isFinite(video2?.duration) ? video2.duration : 0,
+        paused: !!video2?.paused,
+        playbackRate: Number.isFinite(video2?.playbackRate) ? video2.playbackRate : globalPlaybackRate,
+        updatedAt: Date.now()
+    };
+}
+
+function requestPlayer2SetSync() {
+    dispatchToPeer({
+        type: 'player2-request-set-sync',
+        state: buildPlayer2SyncRequestState()
+    });
+}
+
+function requestFreshRemotePlayer2State(timeoutMs = 350) {
+    if (!isElectronWindowMode() || !player2WindowOpen) return Promise.resolve(remotePlayer2State);
+
+    const commandId = `remote-player2-state-${++remotePlayer2StateRequestId}`;
+    return new Promise((resolve) => {
+        const timeout = window.setTimeout(() => {
+            remotePlayer2StateWaiters.delete(commandId);
+            resolve(remotePlayer2State);
+        }, timeoutMs);
+
+        remotePlayer2StateWaiters.set(commandId, {
+            resolve: (state) => {
+                window.clearTimeout(timeout);
+                resolve(state || remotePlayer2State);
+            }
+        });
+
+        dispatchToPeer({ type: 'player2-request-state', commandId });
+    });
 }
 
 function applyTransformHotkey(code, alt, ctrl) {
@@ -1063,6 +1155,24 @@ function maybeBroadcastPlayer2State(reason) {
     });
 }
 
+function broadcastPlayer2Metadata(reason) {
+    if (!electronAPI || !isPlayer2Window()) return;
+    dispatchToPeer({
+        type: 'player2-metadata',
+        reason: reason || 'metadata',
+        state: {
+            src: video2.currentSrc || video2.src || '',
+            filePath: lastVideoPath2 || null,
+            currentTime: video2.currentTime || 0,
+            duration: video2.duration || 0,
+            paused: !!video2.paused,
+            playbackRate: Number.isFinite(video2.playbackRate) ? video2.playbackRate : globalPlaybackRate,
+            frameRate: getFrameRateForPlayer(2),
+            updatedAt: Date.now()
+        }
+    });
+}
+
 function handlePlayer2VolumeChange(reason) {
     const slider = document.getElementById('volumeSlider2');
     if (slider) {
@@ -1096,6 +1206,7 @@ async function hydrateLocalPlayer2FromSnapshot(snapshot, options) {
         subtitles2 = Array.isArray(state.subtitles) ? [...state.subtitles] : [];
         subtitlesEnabled2 = state.subtitlesEnabled !== false;
         lastSubtitlePath2 = typeof state.subtitlePath === 'string' ? state.subtitlePath : null;
+        setFrameRateForPlayer(2, state.frameRate);
         setSubtitleFontScale(2, state.subtitleFontScale, { notify: false, broadcast: false });
         tf2 = nextTf;
         if (lastVideoPath2 !== state.filePath && typeof state.filePath === 'string') {
@@ -1106,7 +1217,8 @@ async function hydrateLocalPlayer2FromSnapshot(snapshot, options) {
             if (nextSrc) {
                 await loadVideoFromSource(video2, nextSrc, VIDEO_PLAYER_IDS.video2, state.filePath || null, {
                     persist: opts.persist !== false,
-                    skipModeRouting: true
+                    skipModeRouting: true,
+                    clearSubtitles: false
                 });
             } else {
                 try { video2.pause(); } catch { }
@@ -1135,6 +1247,7 @@ async function hydrateLocalPlayer2FromSnapshot(snapshot, options) {
             updateProgress(video2, 'progressBar2', 'timeDisplay2');
             updateSubtitles(2, state.currentTime || video2.currentTime || 0);
             handlePlayer2VolumeChange('hydrate');
+            broadcastPlayer2Metadata('hydrate');
         };
 
         if (shouldLoad && nextSrc) {
@@ -1256,17 +1369,32 @@ async function initializeElectronContext() {
                 await hydrateLocalPlayer2FromSnapshot(message.state, { persist: false });
                 maybeBroadcastPlayer2State('hydrate-applied');
             } else if (message.type === 'player2-seek') {
+                revealPlayerControls();
                 if (Number.isFinite(message.currentTime)) {
-                    try { video2.currentTime = message.currentTime; } catch { }
+                    const targetTime = message.currentTime;
+                    try { video2.currentTime = targetTime; } catch { }
                     updateProgress(video2, 'progressBar2', 'timeDisplay2');
-                    updateSubtitles(2, video2.currentTime || 0);
+                    updateSubtitles(2, targetTime);
+                    await waitForVideoSeekEvent(video2);
+                    updateProgress(video2, 'progressBar2', 'timeDisplay2');
+                    updateSubtitles(2, video2.currentTime || targetTime);
                     maybeBroadcastPlayer2State('seek-command');
+                    if (message.commandId) {
+                        dispatchToPeer({
+                            type: 'player2-seek-complete',
+                            commandId: message.commandId,
+                            currentTime: video2.currentTime || targetTime
+                        });
+                    }
                 }
             } else if (message.type === 'player2-play') {
+                revealPlayerControls();
                 video2.play().catch(() => { });
             } else if (message.type === 'player2-pause') {
+                revealPlayerControls();
                 try { video2.pause(); } catch { }
             } else if (message.type === 'player2-speed') {
+                revealPlayerControls();
                 const rate = Number(message.rate);
                 if (Number.isFinite(rate)) {
                     globalPlaybackRate = rate;
@@ -1282,6 +1410,12 @@ async function initializeElectronContext() {
                 maybeBroadcastPlayer2State('subtitle-toggle-command');
             } else if (message.type === 'player2-sync-meta') {
                 applySyncMeta(message.sync);
+            } else if (message.type === 'player2-request-state') {
+                dispatchToPeer({
+                    type: 'player2-state-response',
+                    commandId: message.commandId,
+                    state: buildPlayer2Snapshot()
+                });
             }
             return;
         }
@@ -1302,9 +1436,38 @@ async function initializeElectronContext() {
             if (Array.isArray(merged.subtitles)) subtitles2 = [...merged.subtitles];
             subtitlesEnabled2 = merged.subtitlesEnabled !== false;
             lastSubtitlePath2 = typeof merged.subtitlePath === 'string' ? merged.subtitlePath : null;
+            setFrameRateForPlayer(2, merged.frameRate);
             setSubtitleFontScale(2, merged.subtitleFontScale, { notify: false, broadcast: false });
             if (typeof merged.filePath === 'string') lastVideoPath2 = merged.filePath;
             schedulePersistElectronPlaybackSession();
+            return;
+        }
+
+        if (message.type === 'player2-state-response') {
+            const merged = mergeRemotePlayer2State(message.state);
+            const waiter = remotePlayer2StateWaiters.get(message.commandId);
+            if (waiter) {
+                remotePlayer2StateWaiters.delete(message.commandId);
+                waiter.resolve(merged);
+            }
+            schedulePersistElectronPlaybackSession();
+            return;
+        }
+
+        if (message.type === 'player2-metadata') {
+            const merged = mergeRemotePlayer2State(message.state);
+            setFrameRateForPlayer(2, merged.frameRate);
+            if (typeof merged.filePath === 'string') lastVideoPath2 = merged.filePath;
+            schedulePersistElectronPlaybackSession();
+            return;
+        }
+
+        if (message.type === 'player2-seek-complete') {
+            const waiter = remotePlayer2SeekWaiters.get(message.commandId);
+            if (waiter) {
+                remotePlayer2SeekWaiters.delete(message.commandId);
+                waiter.resolve(message.currentTime);
+            }
             return;
         }
 
@@ -1382,10 +1545,18 @@ async function initializeElectronContext() {
                 if (Number.isFinite(seconds)) skipTime(seconds);
             } else if (message.action === 'step-frame') {
                 const direction = Number(message.direction);
-                if (Number.isFinite(direction)) startFrameStepHold(direction);
+                if (Number.isFinite(direction) && activeVideo === 2 && isElectronWindowMode()) {
+                    startRemotePlayer2FrameStepHold(direction);
+                } else if (Number.isFinite(direction)) {
+                    startFrameStepHold(direction);
+                }
             } else if (message.action === 'stop-frame-step') {
                 const direction = Number(message.direction);
-                if (!Number.isFinite(direction) || frameStepHoldDirection === direction) stopFrameStepHold();
+                if (!Number.isFinite(direction)
+                    || frameStepHoldDirection === direction
+                    || remoteFrameStepHoldDirection === direction) {
+                    stopFrameStepHold();
+                }
             } else if (message.action === 'speed') {
                 const direction = Number(message.direction);
                 if (Number.isFinite(direction)) bumpSpeed(direction);
@@ -1395,7 +1566,8 @@ async function initializeElectronContext() {
             } else if (message.action === 'toggle-subtitles') {
                 toggleSubtitles(activeVideo);
             } else if (message.action === 'set-sync') {
-                if (!isSynced) recordUndoableAction('Set Sync Point', setSyncPoint);
+                if (message.player2State) mergeRemotePlayer2State(message.player2State);
+                if (!isSynced) recordSetSyncPoint();
             } else if (message.action === 'clear-sync') {
                 recordUndoableAction('Clear Sync', clearSyncPoint);
             } else if (message.action === 'reset-timestamps') {
@@ -1415,7 +1587,8 @@ async function initializeElectronContext() {
         }
 
         if (message.type === 'player2-request-set-sync') {
-            recordUndoableAction('Set Sync Point', setSyncPoint);
+            if (message.state) mergeRemotePlayer2State(message.state);
+            recordSetSyncPoint();
             return;
         }
 
@@ -1534,9 +1707,8 @@ async function initializePlayers() {
     // Hide any legacy fullscreen button in the left group if present
     const legacyFs = document.getElementById('fsBtn1');
     if (legacyFs && legacyFs !== fsBtn) legacyFs.style.display = 'none';
-    // Remove overlay fullscreen button if it exists
-    const fs2Old = document.getElementById('fsBtn2');
-    if (fs2Old) fs2Old.remove();
+    const fsBtn2 = document.getElementById('fsBtn2');
+    if (fsBtn2) fsBtn2.addEventListener('click', () => toggleFullscreen());
 
     // Double-click on main player toggles fullscreen (ignore clicks on controls)
     const mainContainer = document.getElementById('mainPlayer');
@@ -1573,15 +1745,19 @@ async function initializePlayers() {
     const overlayContainer = document.getElementById('overlayPlayer');
     if (overlayContainer) {
         overlayContainer.addEventListener('wheel', (e) => handleWheelVolume(e, video2, 'volumeSlider2', 'muteBtn2'), { passive: false });
+        overlayContainer.addEventListener('dblclick', (e) => {
+            if (e.target.closest('.overlay-controls') || e.target.closest('.resize-handle')) return;
+            toggleFullscreen();
+        });
     }
 
     // Sync control (Set only)
-    document.getElementById('setSyncBtn').addEventListener('click', () => {
+    document.getElementById('setSyncBtn').addEventListener('click', async () => {
         if (isPlayer2Window()) {
-            dispatchToPeer({ type: 'player2-request-set-sync' });
+            requestPlayer2SetSync();
             return;
         }
-        recordUndoableAction('Set Sync Point', setSyncPoint);
+        await recordSetSyncPoint();
     });
 
     // Video events
@@ -1594,6 +1770,7 @@ async function initializePlayers() {
         updateProgress(video2, 'progressBar2', 'timeDisplay2');
         updateSubtitles(2, video2.currentTime);
         schedulePersistElectronPlaybackSession();
+        if (isPlayer2Window()) maybeBroadcastPlayer2State('timeupdate');
     });
     // Keep play/pause icons in sync with state, even on programmatic play/pause
     video1.addEventListener('play', () => {
@@ -1620,7 +1797,17 @@ async function initializePlayers() {
     });
     video2.addEventListener('loadedmetadata', () => {
         schedulePersistElectronPlaybackSession();
-        if (isPlayer2Window()) maybeBroadcastPlayer2State('loadedmetadata');
+        if (isPlayer2Window()) {
+            broadcastPlayer2Metadata('loadedmetadata');
+            maybeBroadcastPlayer2State('loadedmetadata');
+        }
+    });
+    video2.addEventListener('seeking', () => {
+        if (isPlayer2Window()) maybeBroadcastPlayer2State('seeking');
+    });
+    video2.addEventListener('seeked', () => {
+        schedulePersistElectronPlaybackSession(0);
+        if (isPlayer2Window()) maybeBroadcastPlayer2State('seeked');
     });
     video2.addEventListener('volumechange', () => {
         if (isPlayer2Window()) handlePlayer2VolumeChange('volumechange');
@@ -1773,7 +1960,9 @@ function toggleFullscreen() {
 
 function updateFullscreenButtons() {
     const fs1 = document.getElementById('fsBtnMain') || document.getElementById('fsBtn1');
-    if (fs1) fs1.textContent = '⛶'; // keep icon constant
+    if (fs1) fs1.textContent = String.fromCharCode(0x26F6); // keep icon constant
+    const fs2 = document.getElementById('fsBtn2');
+    if (fs2) fs2.textContent = String.fromCharCode(0x26F6);
 }
 
 document.addEventListener('fullscreenchange', updateFullscreenButtons);
@@ -1963,6 +2152,7 @@ async function openVideoFromDialog(video, playerId) {
     try {
         const selected = await electronAPI.openVideoFile();
         if (!selected || !selected.path || !selected.fileUrl) return;
+        applyVideoMetadata(playerId, selected, { notifyOnFailure: true });
         await loadVideoFromSource(video, selected.fileUrl, playerId, selected.path);
         await autoLoadSubtitleForVideo(playerId, selected.path);
     } catch {
@@ -1979,7 +2169,7 @@ async function restoreLastPlayedVideos() {
         ]);
 
         if (last1 && last1.fileUrl && isMainWindow()) {
-            await loadVideoFromSource(video1, last1.fileUrl, VIDEO_PLAYER_IDS.video1, last1.path, { persist: false });
+            await loadVideoFromSource(video1, last1.fileUrl, VIDEO_PLAYER_IDS.video1, last1.path, { persist: false, clearSubtitles: false });
             await autoLoadSubtitleForVideo(VIDEO_PLAYER_IDS.video1, last1.path, { persist: false, skipIfExisting: true });
         }
         if (last2 && last2.fileUrl) {
@@ -1996,7 +2186,7 @@ async function restoreLastPlayedVideos() {
                 schedulePersistElectronPlaybackSession();
                 return;
             }
-            await loadVideoFromSource(video2, last2.fileUrl, VIDEO_PLAYER_IDS.video2, last2.path, { persist: false });
+            await loadVideoFromSource(video2, last2.fileUrl, VIDEO_PLAYER_IDS.video2, last2.path, { persist: false, clearSubtitles: false });
             await autoLoadSubtitleForVideo(VIDEO_PLAYER_IDS.video2, last2.path, { persist: false, skipIfExisting: true });
         }
     } catch {
@@ -2011,6 +2201,31 @@ function getPlayerNumFromPlayerId(playerId) {
 function hasSubtitleForPlayer(playerNum) {
     const subtitles = playerNum === 1 ? subtitles1 : subtitles2;
     return Array.isArray(subtitles) && subtitles.length > 0;
+}
+
+async function clearSubtitlesForPlayer(playerNum, options = {}) {
+    const playerId = playerNum === 1 ? VIDEO_PLAYER_IDS.video1 : VIDEO_PLAYER_IDS.video2;
+
+    if (playerNum === 1) {
+        subtitles1 = [];
+        lastSubtitlePath1 = null;
+        updateSubtitles(1, video1.currentTime || 0);
+    } else {
+        subtitles2 = [];
+        lastSubtitlePath2 = null;
+        updateSubtitles(2, getPlayer2Time());
+
+        if (isMainWindow() && isElectronWindowMode()) {
+            mergeRemotePlayer2State({ subtitles: [], subtitlePath: null });
+            sendHydrateToPlayer2Window();
+        } else {
+            maybeBroadcastPlayer2State('subtitle-clear');
+        }
+    }
+
+    if (options.persist !== false && electronAPI && typeof electronAPI.setLastSubtitle === 'function') {
+        try { await electronAPI.setLastSubtitle(playerId, null); } catch { }
+    }
 }
 
 async function autoLoadSubtitleForVideo(playerId, videoPath, options = {}) {
@@ -2040,6 +2255,34 @@ async function openSubtitleFromDialog(playerNum) {
     }
 }
 
+function applyVideoMetadata(playerId, metadata, options = {}) {
+    const playerNum = getPlayerNumFromPlayerId(playerId);
+    if (metadata && Number.isFinite(Number(metadata.frameRate)) && Number(metadata.frameRate) > 0) {
+        setFrameRateForPlayer(playerNum, metadata.frameRate);
+        return true;
+    }
+
+    setFrameRateForPlayer(playerNum, DEFAULT_FRAME_RATE);
+    if (options.notifyOnFailure) {
+        showControlNotification(`Could not detect FPS; using ${DEFAULT_FRAME_RATE} fps`);
+    }
+    return false;
+}
+
+async function ensureFrameRateForVideo(playerId, localPath, options = {}) {
+    if (!localPath || !electronAPI || typeof electronAPI.probeVideoMetadata !== 'function') {
+        applyVideoMetadata(playerId, null, { notifyOnFailure: !!localPath && options.notifyOnProbeFailure });
+        return;
+    }
+
+    try {
+        const metadata = await electronAPI.probeVideoMetadata(localPath);
+        applyVideoMetadata(playerId, metadata, { notifyOnFailure: options.notifyOnProbeFailure });
+    } catch {
+        applyVideoMetadata(playerId, null, { notifyOnFailure: options.notifyOnProbeFailure });
+    }
+}
+
 async function restoreLastPlayedSubtitles() {
     if (!electronAPI) return;
     try {
@@ -2063,6 +2306,12 @@ async function restoreLastPlayedSubtitles() {
 async function loadVideoFromSource(video, src, playerId, localPath, options) {
     if (!video || !src) return;
     const opts = options || {};
+    await ensureFrameRateForVideo(playerId, localPath, opts);
+    if (opts.clearSubtitles !== false) {
+        await clearSubtitlesForPlayer(getPlayerNumFromPlayerId(playerId), {
+            persist: opts.persist !== false
+        });
+    }
     if (playerId === VIDEO_PLAYER_IDS.video2 && isElectronWindowMode() && !opts.skipModeRouting) {
         remotePlayer2State = mergeRemotePlayer2State({
             ...remotePlayer2State,
@@ -2071,7 +2320,10 @@ async function loadVideoFromSource(video, src, playerId, localPath, options) {
             currentTime: 0,
             duration: 0,
             paused: true,
-            playbackRate: globalPlaybackRate
+            playbackRate: globalPlaybackRate,
+            frameRate: getFrameRateForPlayer(2),
+            subtitles: [],
+            subtitlePath: null
         });
         if (opts.persist !== false && electronAPI && localPath) {
             try { await electronAPI.setLastVideo(playerId, localPath); } catch { }
@@ -2096,7 +2348,7 @@ function loadVideo(event, video, playerId) {
     const file = event.target.files[0];
     if (file) {
         const url = URL.createObjectURL(file);
-        loadVideoFromSource(video, url, playerId, file.path || null);
+        loadVideoFromSource(video, url, playerId, file.path || null, { notifyOnProbeFailure: true });
     }
 }
 
@@ -2368,8 +2620,9 @@ function updateProgress(video, progressBarId, timeDisplayId) {
         progressBar.style.width = percentage + '%';
 
         const timeDisplayOptions = getTimeDisplayOptions(video.duration);
-        const current = formatTime(video.currentTime, timeDisplayOptions);
-        const total = formatTime(video.duration, timeDisplayOptions);
+        const frameRate = getFrameRateForPlayer(getPlayerNumFromVideo(video));
+        const current = formatTime(video.currentTime, timeDisplayOptions, frameRate);
+        const total = formatTime(video.duration, timeDisplayOptions, frameRate);
         renderTimeDisplay(timeDisplay, current, total);
     }
 }
@@ -2382,10 +2635,11 @@ function getTimeDisplayOptions(duration) {
     return { includeHours, minuteDigits };
 }
 
-function formatTime(seconds, options = {}) {
-    const totalFrames = Math.max(0, Math.round((Number(seconds) || 0) * FRAME_RATE));
-    const frame = totalFrames % FRAME_RATE;
-    const totalSeconds = Math.floor(totalFrames / FRAME_RATE);
+function formatTime(seconds, options = {}, frameRate = DEFAULT_FRAME_RATE) {
+    const fps = getDisplayFrameRate(frameRate);
+    const totalFrames = Math.max(0, Math.round((Number(seconds) || 0) * fps));
+    const frame = totalFrames % fps;
+    const totalSeconds = Math.floor(totalFrames / fps);
     const hours = Math.floor(totalSeconds / 3600);
     const minutes = Math.floor((totalSeconds % 3600) / 60);
     const secs = totalSeconds % 60;
@@ -2405,6 +2659,10 @@ function formatTime(seconds, options = {}) {
         time: `${totalMinutes.toString().padStart(minuteDigits, '0')}:${secondsText}`,
         frame: frameText
     };
+}
+
+function getDisplayFrameRate(frameRate) {
+    return Math.max(1, Math.round(normalizeFrameRate(frameRate)));
 }
 
 function createTimeSegment(parts, options = {}) {
@@ -2604,9 +2862,8 @@ function srtTextToHtml(text) {
     });
     escaped = escaped.replace(/&lt;\/font&gt;/gi, '</span>');
 
-    // Convert SRT newlines and \N to <br>
+    // Preserve authored SRT line breaks.
     escaped = escaped.replace(/\\N/g, '<br>');
-    // Convert newlines to <br>
     return escaped.replace(/\r?\n/g, '<br>');
 }
 
@@ -2684,7 +2941,7 @@ function swapVideos() {
 
         const restoreMain = async () => {
             if (player2State.src) {
-                await loadVideoFromSource(video1, player2State.src, VIDEO_PLAYER_IDS.video1, player2State.filePath, { persist: false });
+                await loadVideoFromSource(video1, player2State.src, VIDEO_PLAYER_IDS.video1, player2State.filePath, { persist: false, clearSubtitles: false });
             } else {
                 try { video1.pause(); } catch { }
                 video1.removeAttribute('src');
@@ -2893,7 +3150,7 @@ function toggleMute(video, muteBtnId, sliderId) {
 
 function setSyncPoint() {
     if (isPlayer2Window()) {
-        dispatchToPeer({ type: 'player2-request-set-sync' });
+        requestPlayer2SetSync();
         return;
     }
 
@@ -3053,10 +3310,24 @@ function showControlNotification(message) {
 }
 
 // ================== Keyboard ==================
+function getPunctuationDirectionFromEvent(event) {
+    const key = String(event.key || '');
+    const code = String(event.code || '');
+
+    if (code === 'Period' || code === 'NumpadDecimal' || key === '.' || key === '>') return 1;
+    if (code === 'Comma' || key === ',' || key === '<') return -1;
+    return 0;
+}
+
 function getFrameStepDirectionFromEvent(event, options = {}) {
     if (!options.ignoreModifiers && (event.shiftKey || event.ctrlKey || event.altKey || event.metaKey)) return 0;
-    if (event.code === 'Period' || event.key === '.') return 1;
-    if (event.code === 'Comma' || event.key === ',') return -1;
+    return getPunctuationDirectionFromEvent(event);
+}
+
+function getSpeedShortcutDirectionFromEvent(event) {
+    if (!event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return 0;
+    const direction = getPunctuationDirectionFromEvent(event);
+    if (direction) return direction;
     return 0;
 }
 
@@ -3077,10 +3348,25 @@ function getHeldFrameStepDirection(preferredDirection = 0) {
     return 0;
 }
 
+function isFrameStepDirectionHeld(direction) {
+    if (direction > 0) return !!frameStepHeldKeys.period;
+    if (direction < 0) return !!frameStepHeldKeys.comma;
+    return false;
+}
+
 function stopFrameStepHold() {
     frameStepHeldKeys.comma = false;
     frameStepHeldKeys.period = false;
     frameStepHoldDirection = 0;
+    remoteFrameStepHoldDirection = 0;
+    if (frameStepHoldStartTimer) {
+        clearTimeout(frameStepHoldStartTimer);
+        frameStepHoldStartTimer = null;
+    }
+    if (remoteFrameStepHoldStartTimer) {
+        clearTimeout(remoteFrameStepHoldStartTimer);
+        remoteFrameStepHoldStartTimer = null;
+    }
 }
 
 function handleKeyboardKeyup(event) {
@@ -3242,7 +3528,7 @@ function handleKeyboard(event) {
     if (event.key === 'Enter') {
         event.preventDefault();
         if (requestMainKeyboardControl('set-sync')) return;
-        if (!isSynced) recordUndoableAction('Set Sync Point', setSyncPoint);
+        if (!isSynced) recordSetSyncPoint();
         return;
     }
     // Toggle fullscreen with "F"
@@ -3270,31 +3556,27 @@ function handleKeyboard(event) {
         return;
     }
 
+    // Shift + '.' increase speed, Shift + ',' decrease speed
+    const speedShortcutDirection = getSpeedShortcutDirectionFromEvent(event);
+    if (speedShortcutDirection) {
+        event.preventDefault();
+        if (requestMainKeyboardControl('speed', { direction: speedShortcutDirection })) return;
+        bumpSpeed(speedShortcutDirection);
+        return;
+    }
+
     // "." next frame, "," previous frame. Holding either key steps continuously.
     const frameStepDirection = getFrameStepDirectionFromEvent(event);
     if (frameStepDirection) {
         event.preventDefault();
         revealPlayerControls();
+        if (event.repeat && isFrameStepDirectionHeld(frameStepDirection)) return;
         updateFrameStepHeldKey(event, true);
         if (isPlayer2Window() && activeVideo === 1) {
-            requestMainKeyboardControl('step-frame', { direction: frameStepDirection });
+            requestMainKeyboardControl('step-frame', { direction: frameStepDirection, phase: 'press' });
             return;
         }
         startFrameStepHold(frameStepDirection);
-        return;
-    }
-
-    // Shift + '.' increase speed, Shift + ',' decrease speed
-    if (event.shiftKey && (event.code === 'Period' || event.key === '.' || event.key === '>')) {
-        event.preventDefault();
-        if (requestMainKeyboardControl('speed', { direction: 1 })) return;
-        bumpSpeed(+1);
-        return;
-    }
-    if (event.shiftKey && (event.code === 'Comma' || event.key === ',' || event.key === '<')) {
-        event.preventDefault();
-        if (requestMainKeyboardControl('speed', { direction: -1 })) return;
-        bumpSpeed(-1);
         return;
     }
 
@@ -3403,20 +3685,25 @@ function handleKeyboard(event) {
     }
 }
 
-function skipTime(seconds) {
+function seekRemotePlayer2(time, options = {}) {
+    const commandId = options.waitForSeek ? `remote-player2-seek-${++remotePlayer2SeekCommandId}` : null;
+    mergeRemotePlayer2State({
+        currentTime: time,
+        updatedAt: Date.now()
+    });
+    dispatchToPeer({ type: 'player2-seek', currentTime: time, commandId });
+    return commandId ? waitForRemotePlayer2Seek(commandId) : Promise.resolve();
+}
+
+function skipTime(seconds, options = {}) {
+    const pendingSeeks = [];
     const controllingRemotePlayer2 = isElectronWindowMode() && activeVideo === 2;
     const activeVid = activeVideo === 1 ? video1 : video2;
     const otherVid = activeVideo === 1 ? video2 : video1;
     const activeDuration = controllingRemotePlayer2 ? getPlayer2Duration() : (activeVid.duration || 0);
     const activeCurrentTime = controllingRemotePlayer2 ? getPlayer2Time() : (activeVid.currentTime || 0);
-    const newTime = Math.max(0, Math.min(activeDuration || 0, activeCurrentTime + seconds));
-
-    if (controllingRemotePlayer2) {
-        remotePlayer2State.currentTime = newTime;
-        dispatchToPeer({ type: 'player2-seek', currentTime: newTime });
-    } else {
-        activeVid.currentTime = newTime;
-    }
+    const activeMaxTime = activeDuration > 0 ? activeDuration : Number.MAX_SAFE_INTEGER;
+    const newTime = Math.max(0, Math.min(activeMaxTime, activeCurrentTime + seconds));
 
     if (isSynced) {
         // Calculate synced time for the other video
@@ -3431,19 +3718,86 @@ function skipTime(seconds) {
         const otherDuration = activeVideo === 1 && isElectronWindowMode() ? getPlayer2Duration() : (otherVid.duration || 0);
         if (syncedTime >= 0 && syncedTime <= otherDuration) {
             if (activeVideo === 1 && isElectronWindowMode()) {
-                remotePlayer2State.currentTime = syncedTime;
-                dispatchToPeer({ type: 'player2-seek', currentTime: syncedTime });
+                pendingSeeks.push(seekRemotePlayer2(syncedTime, options));
             } else {
                 otherVid.currentTime = syncedTime;
             }
             lastSyncTime = Date.now(); // Update last sync time to prevent immediate re-sync
         }
     }
+
+    if (controllingRemotePlayer2) {
+        pendingSeeks.push(seekRemotePlayer2(newTime, options));
+    } else {
+        activeVid.currentTime = newTime;
+    }
+
     schedulePersistElectronPlaybackSession(0);
+    return pendingSeeks.length ? Promise.all(pendingSeeks) : Promise.resolve();
 }
 
-// Frame stepping (approximate). Uses 1/60s per frame.
-const FRAME_STEP_SECONDS = 1 / FRAME_RATE;
+function waitForRemotePlayer2Seek(commandId) {
+    if (!commandId) return Promise.resolve();
+    return new Promise((resolve) => {
+        remotePlayer2SeekWaiters.set(commandId, {
+            resolve: (value) => {
+                resolve(value);
+            }
+        });
+    });
+}
+
+async function stepRemotePlayer2Frame(direction, options = {}) {
+    const step = (direction >= 0 ? 1 : -1) / getFrameRateForPlayer(2);
+    const duration = getPlayer2Duration();
+    const maxTime = duration > 0 ? duration : Number.MAX_SAFE_INTEGER;
+    const newTime = Math.max(0, Math.min(maxTime, getPlayer2Time() + step));
+    const commandId = options.waitForSeek ? `remote-frame-step-${++remotePlayer2SeekCommandId}` : null;
+
+    mergeRemotePlayer2State({
+        currentTime: newTime,
+        paused: true,
+        updatedAt: Date.now()
+    });
+    dispatchToPeer({ type: 'player2-pause' });
+    dispatchToPeer({ type: 'player2-seek', currentTime: newTime, commandId });
+    schedulePersistElectronPlaybackSession(0);
+    if (commandId) await waitForRemotePlayer2Seek(commandId);
+}
+
+function startRemotePlayer2FrameStepHold(direction) {
+    remoteFrameStepHoldDirection = direction >= 0 ? 1 : -1;
+    if (remoteFrameStepHoldStartTimer || remoteFrameStepHoldRunning) return;
+    runInitialRemotePlayer2FrameStep();
+}
+
+async function runInitialRemotePlayer2FrameStep() {
+    remoteFrameStepHoldRunning = true;
+    try {
+        await stepRemotePlayer2Frame(remoteFrameStepHoldDirection, { waitForSeek: true });
+    } finally {
+        remoteFrameStepHoldRunning = false;
+    }
+
+    if (!remoteFrameStepHoldDirection) return;
+    remoteFrameStepHoldStartTimer = setTimeout(() => {
+        remoteFrameStepHoldStartTimer = null;
+        if (remoteFrameStepHoldDirection && !remoteFrameStepHoldRunning) runRemotePlayer2FrameStepHold();
+    }, FRAME_STEP_HOLD_START_DELAY_MS);
+}
+
+async function runRemotePlayer2FrameStepHold() {
+    remoteFrameStepHoldRunning = true;
+    try {
+        while (remoteFrameStepHoldDirection) {
+            await stepRemotePlayer2Frame(remoteFrameStepHoldDirection, { waitForSeek: true });
+        }
+    } finally {
+        remoteFrameStepHoldRunning = false;
+    }
+}
+
+// Frame stepping uses the active video's detected frame rate when available.
 function delayMs(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -3469,6 +3823,17 @@ function waitForVideoSeek(video, timeoutMs = FRAME_STEP_SEEK_TIMEOUT_MS) {
     });
 }
 
+function waitForVideoSeekEvent(video) {
+    if (!video) return Promise.resolve();
+    return new Promise((resolve) => {
+        if (!video.seeking) {
+            resolve();
+            return;
+        }
+        video.addEventListener('seeked', resolve, { once: true });
+    });
+}
+
 function updateVideoAfterManualSeek(videoNum) {
     if (videoNum === 1) {
         updateProgress(video1, 'progressBar1', 'timeDisplay1');
@@ -3484,8 +3849,25 @@ function startFrameStepHold(direction) {
     if (direction > 0) frameStepHeldKeys.period = true;
     if (direction < 0) frameStepHeldKeys.comma = true;
     frameStepHoldDirection = direction >= 0 ? 1 : -1;
-    if (frameStepHoldRunning) return;
-    runFrameStepHold();
+    if (frameStepHoldRunning || frameStepHoldStartTimer) return;
+    runInitialFrameStep();
+}
+
+async function runInitialFrameStep() {
+    frameStepHoldRunning = true;
+    try {
+        await stepFrame(frameStepHoldDirection, { waitForSeek: true });
+    } finally {
+        frameStepHoldRunning = false;
+    }
+
+    frameStepHoldDirection = getHeldFrameStepDirection(frameStepHoldDirection);
+    if (!frameStepHoldDirection) return;
+
+    frameStepHoldStartTimer = setTimeout(() => {
+        frameStepHoldStartTimer = null;
+        if (frameStepHoldDirection && !frameStepHoldRunning) runFrameStepHold();
+    }, FRAME_STEP_HOLD_START_DELAY_MS);
 }
 
 async function runFrameStepHold() {
@@ -3497,7 +3879,7 @@ async function runFrameStepHold() {
             await stepFrame(direction, { waitForSeek: true });
             frameStepHoldDirection = getHeldFrameStepDirection(direction);
             if (frameStepHoldDirection) {
-                await delayMs(FRAME_STEP_HOLD_DELAY_MS);
+                await delayMs(0);
             }
         }
     } finally {
@@ -3515,16 +3897,23 @@ async function stepFrame(direction, options = {}) {
     const wasRemotePlayer2 = isElectronWindowMode() && activeVideo === 2;
     const localVideoNum = activeVideo;
     const localVideo = localVideoNum === 1 ? video1 : video2;
-    const step = (direction >= 0 ? 1 : -1) * FRAME_STEP_SECONDS;
-    skipTime(step);
+    const step = (direction >= 0 ? 1 : -1) / getFrameRateForPlayer(activeVideo);
+    const remoteSeekPromise = skipTime(step, { waitForSeek: options.waitForSeek });
     if (!wasRemotePlayer2) {
         updateVideoAfterManualSeek(localVideoNum);
         if (options.waitForSeek) {
-            await waitForVideoSeek(localVideo);
+            if (isElectronWindowMode() && activeVideo === 1 && isSynced) {
+                await remoteSeekPromise;
+            } else {
+                await Promise.all([
+                    waitForVideoSeek(localVideo),
+                    remoteSeekPromise
+                ]);
+            }
             updateVideoAfterManualSeek(localVideoNum);
         }
     } else if (options.waitForSeek) {
-        await delayMs(FRAME_STEP_HOLD_DELAY_MS);
+        await remoteSeekPromise;
     }
 }
 

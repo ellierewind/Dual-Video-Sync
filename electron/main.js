@@ -1,4 +1,5 @@
 const { app, BrowserWindow, dialog, ipcMain } = require('electron');
+const { execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { pathToFileURL } = require('url');
@@ -9,6 +10,8 @@ const PLAYER2_MODES = new Set(['overlay', 'window']);
 
 let mainWindow = null;
 let player2Window = null;
+let closingPairedWindows = false;
+let closingPlayer2ForModeChange = false;
 
 function getPrefsPath() {
   return path.join(app.getPath('userData'), PREFS_FILE);
@@ -58,6 +61,52 @@ function findMatchingSubtitleForVideo(videoPath) {
   const parsed = path.parse(videoPath);
   const subtitlePath = path.join(parsed.dir, `${parsed.name}.srt`);
   return fs.existsSync(subtitlePath) ? resolveSubtitleFile(subtitlePath) : null;
+}
+
+function parseFrameRate(value) {
+  if (typeof value !== 'string' || !value) return null;
+  const parts = value.split('/');
+  const fps = parts.length === 2
+    ? Number(parts[0]) / Number(parts[1])
+    : Number(value);
+  return Number.isFinite(fps) && fps > 0 ? fps : null;
+}
+
+function probeVideoMetadata(videoPath) {
+  if (!videoPath || typeof videoPath !== 'string') return Promise.resolve(null);
+
+  return new Promise((resolve) => {
+    execFile('ffprobe', [
+      '-v', 'error',
+      '-select_streams', 'v:0',
+      '-show_entries', 'stream=avg_frame_rate,r_frame_rate',
+      '-of', 'json',
+      videoPath
+    ], { windowsHide: true }, (error, stdout) => {
+      if (error || !stdout) {
+        resolve(null);
+        return;
+      }
+
+      try {
+        const parsed = JSON.parse(stdout);
+        const stream = Array.isArray(parsed.streams) ? parsed.streams[0] : null;
+        const frameRate = parseFrameRate(stream?.avg_frame_rate) || parseFrameRate(stream?.r_frame_rate);
+        resolve(frameRate ? { frameRate } : null);
+      } catch {
+        resolve(null);
+      }
+    });
+  });
+}
+
+function resolveVideoFile(filePath) {
+  const selected = resolveFile(filePath);
+  if (!selected) return Promise.resolve(null);
+  return probeVideoMetadata(filePath).then((metadata) => ({
+    ...selected,
+    ...(metadata || {})
+  }));
 }
 
 function normalizePlaybackSession(value) {
@@ -118,6 +167,15 @@ function sendToWindow(win, channel, payload) {
   }
 }
 
+function closeWindowIfOpen(win) {
+  if (!win || win.isDestroyed()) return;
+  try {
+    win.close();
+  } catch {
+    // no-op
+  }
+}
+
 function broadcastModeState() {
   const payload = getModeState();
   sendToWindow(mainWindow, 'player2-mode:state', payload);
@@ -152,8 +210,16 @@ function createMainWindow() {
     minHeight: 680
   });
 
+  mainWindow.on('close', () => {
+    if (isPlayer2WindowOpen() && !closingPairedWindows) {
+      closingPairedWindows = true;
+      closeWindowIfOpen(player2Window);
+    }
+  });
+
   mainWindow.on('closed', () => {
     mainWindow = null;
+    if (!isPlayer2WindowOpen()) closingPairedWindows = false;
   });
 
   mainWindow.loadFile(getIndexPath());
@@ -175,8 +241,17 @@ function createPlayer2Window() {
     title: 'Dual Video Sync - Player 2'
   });
 
+  player2Window.on('close', () => {
+    if (!closingPlayer2ForModeChange && mainWindow && !mainWindow.isDestroyed() && !closingPairedWindows) {
+      closingPairedWindows = true;
+      closeWindowIfOpen(mainWindow);
+    }
+  });
+
   player2Window.on('closed', () => {
     player2Window = null;
+    closingPlayer2ForModeChange = false;
+    if (!mainWindow || mainWindow.isDestroyed()) closingPairedWindows = false;
     broadcastModeState();
   });
 
@@ -193,7 +268,8 @@ async function applyPlayer2Mode(mode) {
   if (nextMode === 'window') {
     createPlayer2Window();
   } else if (isPlayer2WindowOpen()) {
-    player2Window.close();
+    closingPlayer2ForModeChange = true;
+    closeWindowIfOpen(player2Window);
   }
   broadcastModeState();
   return getModeState();
@@ -230,7 +306,7 @@ ipcMain.handle('dialog:open-video', async () => {
     return { canceled: true };
   }
 
-  const selected = resolveFile(result.filePaths[0]);
+  const selected = await resolveVideoFile(result.filePaths[0]);
   return selected || { canceled: true };
 });
 
@@ -255,7 +331,11 @@ ipcMain.handle('prefs:get-last-video', (_event, playerId) => {
   if (!PLAYER_IDS.has(playerId)) return null;
   const prefs = readPrefs();
   const videos = prefs.lastVideos || {};
-  return resolveFile(videos[playerId]) || null;
+  return resolveVideoFile(videos[playerId]);
+});
+
+ipcMain.handle('video:probe-metadata', (_event, filePath) => {
+  return probeVideoMetadata(filePath);
 });
 
 ipcMain.handle('prefs:set-last-video', (_event, { playerId, filePath }) => {
@@ -276,10 +356,14 @@ ipcMain.handle('prefs:get-last-subtitle', (_event, playerId) => {
 });
 
 ipcMain.handle('prefs:set-last-subtitle', (_event, { playerId, filePath }) => {
-  if (!PLAYER_IDS.has(playerId) || typeof filePath !== 'string' || !filePath) return false;
+  if (!PLAYER_IDS.has(playerId)) return false;
   const prefs = readPrefs();
   const lastSubtitles = prefs.lastSubtitles && typeof prefs.lastSubtitles === 'object' ? prefs.lastSubtitles : {};
-  lastSubtitles[playerId] = filePath;
+  if (typeof filePath === 'string' && filePath) {
+    lastSubtitles[playerId] = filePath;
+  } else {
+    delete lastSubtitles[playerId];
+  }
   prefs.lastSubtitles = lastSubtitles;
   writePrefs(prefs);
   return true;
