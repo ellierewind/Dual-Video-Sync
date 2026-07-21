@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getLastSubtitle: (playerId) => ipcRenderer.invoke('prefs:get-last-subtitle', playerId),
   setLastSubtitle: (playerId, filePath) => ipcRenderer.invoke('prefs:set-last-subtitle', { playerId, filePath }),
   findSubtitleForVideo: (videoPath) => ipcRenderer.invoke('subtitle:find-for-video', videoPath),
+  loadEmbeddedSubtitleTrack: (filePath, streamIndex) => ipcRenderer.invoke('subtitle:load-embedded-track', { filePath, streamIndex }),
   loadVobSubTrack: (filePath, streamIndex) => ipcRenderer.invoke('subtitle:load-vobsub-track', { filePath, streamIndex }),
   prepareDynamicAudioTrack: (filePath, streamIndex, requestId) => ipcRenderer.invoke('audio:prepare-track', { filePath, streamIndex, requestId }),
   onDynamicAudioProgress: (callback) => {

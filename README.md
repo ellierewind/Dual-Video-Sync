@@ -17,7 +17,7 @@ A local dual-video player that can run in a browser (`index.html`) or as an Elec
     -   Volume control with fine granularity for both players.
     -   Mute/Unmute toggles.
 -   **Overlay Mode**: Secondary video can be resized, moved, and overlayed on the primary video.
--   **Subtitle Support**: Load `.srt` files for both videos with basic formatting support and responsive line wrapping. The Electron app dynamically renders embedded MKV VobSub (`dvd_subtitle`) tracks over the original video.
+-   **Subtitle Support**: Load `.srt`, `.ass`, and `.ssa` files for both videos. The Electron app dynamically renders embedded MKV VobSub plus fully styled ASS/SSA tracks over the original video.
 -   **Embedded Audio Support**: The Electron app converts selected AC-3, E-AC-3, DTS, and DTS-HD tracks to a fast local PCM audio cache without transcoding the video.
 -   **Transform Controls**: (Keyboard shortcuts) Zoom, stretch, flip, and rotate videos.
 -   **Profiles**: Save/load multiple layout profiles (video transforms + overlay position/size).
@@ -32,6 +32,8 @@ A local dual-video player that can run in a browser (`index.html`) or as an Elec
 -   **Paired window lifecycle** so closing either app window also closes its companion window.
 -   **Native file picker integration** for `Choose Video 1` / `Choose Video 2`.
 -   **Dynamic MKV VobSub overlays** using the MIT-licensed `libbitsub` WASM renderer. The selected subtitle stream is copied to a small cache while the untouched original MKV begins playback normally.
+-   **Full ASS/SSA rendering** through JASSUB's WebAssembly/WebGL port of `libass`, preserving authored styles, positioning, animation, karaoke, drawings, and MKV font attachments without burning subtitles into the video.
+-   Standalone `.ass` and `.ssa` files use the same libass renderer and remain available across relaunches, player swaps, and Player 2 pop-out/docking.
 -   **Cached AC-3/DTS-family audio** using the bundled FFmpeg decoder. Audio selection, pause, seeking, speed, volume, mute, swapping, and popped-out Player 2 remain tied to the original video timeline.
 -   **Last-loaded video persistence** per player across app restarts.
 -   **Windows `.exe` packaging** via the `electron/` project.
@@ -70,10 +72,11 @@ A local dual-video player that can run in a browser (`index.html`) or as an Elec
     -   `cd electron`
     -   `npm run dist:win` (outputs to `electron/dist/`)
 
-## MKV and VobSub notes
+## MKV subtitle notes
 
 -   The original video is never transcoded, remuxed, or replaced with a proxy. It is assigned directly to the native video element.
 -   Only the selected VobSub subtitle stream is copied into a small cached `.mks` file. `libbitsub` decodes its bitmap cues and synchronizes a transparent canvas with the video while it plays and seeks.
+-   Selected ASS/SSA streams are copied losslessly to the subtitle cache and rendered with JASSUB/libass. Attached OpenType, TrueType, WOFF, and WOFF2 fonts are extracted and passed directly to libass so authored typesetting is retained.
 -   Track selection defaults to English when an English VobSub stream is available. Every embedded VobSub track can be selected—or turned off—from each player's settings menu, and manual choices are remembered per player/video.
 -   A visible overlay reports subtitle extraction/loading while it runs, with persistent ready/error status in the track menu. Existing subtitle toggle and size controls also apply to the bitmap overlay.
 -   FFmpeg/ffprobe provide stream discovery and subtitle-only extraction; their packaged license and build-source notices remain alongside the binaries.

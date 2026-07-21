@@ -39,6 +39,9 @@
         }
 
         .bitmap-subtitle-canvas {
+            position: absolute;
+            z-index: 4;
+            pointer-events: none;
             transform-origin: center center;
             will-change: transform, opacity;
         }

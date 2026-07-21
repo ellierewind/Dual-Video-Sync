@@ -6,4 +6,6 @@ dist/
 /electron/dist-syncfix
 /electron/dist*/
 /electron/renderer/bitmap-subtitles.js
+/electron/renderer/ass-subtitles.js
+/electron/renderer/jassub-worker.js
 /electron/renderer/libbitsub_bg.wasm

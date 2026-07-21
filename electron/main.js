@@ -53,6 +53,7 @@ function resolveSubtitleFile(filePath) {
   if (!selected) return null;
   try {
     selected.content = fs.readFileSync(filePath, 'utf8');
+    selected.format = path.extname(filePath).slice(1).toLowerCase();
   } catch {
     return null;
   }
@@ -305,7 +306,7 @@ ipcMain.handle('dialog:open-subtitle', async () => {
   const result = await dialog.showOpenDialog({
     properties: ['openFile'],
     filters: [
-      { name: 'SRT Files', extensions: ['srt'] },
+      { name: 'Subtitle Files', extensions: ['srt', 'ass', 'ssa'] },
       { name: 'All Files', extensions: ['*'] }
     ]
   });
@@ -365,6 +366,11 @@ ipcMain.handle('subtitle:find-for-video', (_event, videoPath) => {
 });
 
 ipcMain.handle('subtitle:load-vobsub-track', (_event, { filePath, streamIndex }) => {
+  if (typeof filePath !== 'string' || !filePath || !Number.isInteger(Number(streamIndex))) return null;
+  return bitmapSubtitleService.loadTrack(filePath, Number(streamIndex));
+});
+
+ipcMain.handle('subtitle:load-embedded-track', (_event, { filePath, streamIndex }) => {
   if (typeof filePath !== 'string' || !filePath || !Number.isInteger(Number(streamIndex))) return null;
   return bitmapSubtitleService.loadTrack(filePath, Number(streamIndex));
 });

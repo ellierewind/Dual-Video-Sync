@@ -18,6 +18,8 @@ let subtitleFontScale1 = 1;
 let subtitleFontScale2 = 1;
 let lastSubtitlePath1 = null;
 let lastSubtitlePath2 = null;
+let externalAssSubtitle1 = null;
+let externalAssSubtitle2 = null;
 let vobSubTrack1 = null;
 let vobSubTrack2 = null;
 let vobSubTracks1 = [];
@@ -227,6 +229,7 @@ function createEmptyPlayer2State() {
         updatedAt: Date.now(),
         subtitles: [],
         subtitlePath: null,
+        externalAssSubtitle: null,
         subtitlesEnabled: true,
         subtitleFontScale: 1,
         vobSubTrack: null,
@@ -274,7 +277,12 @@ function mergeRemotePlayer2State(partial) {
         ...partial,
         updatedAt: Number.isFinite(partial.updatedAt) ? partial.updatedAt : Date.now(),
         subtitles: Array.isArray(partial.subtitles) ? partial.subtitles : remotePlayer2State.subtitles,
-        subtitlePath: typeof partial.subtitlePath === 'string' ? partial.subtitlePath : remotePlayer2State.subtitlePath,
+        subtitlePath: Object.prototype.hasOwnProperty.call(partial, 'subtitlePath')
+            ? (typeof partial.subtitlePath === 'string' ? partial.subtitlePath : null)
+            : remotePlayer2State.subtitlePath,
+        externalAssSubtitle: Object.prototype.hasOwnProperty.call(partial, 'externalAssSubtitle')
+            ? partial.externalAssSubtitle
+            : remotePlayer2State.externalAssSubtitle,
         subtitleFontScale: Number.isFinite(partial.subtitleFontScale) ? normalizeSubtitleFontScale(partial.subtitleFontScale) : remotePlayer2State.subtitleFontScale,
         vobSubTracks: Array.isArray(partial.vobSubTracks) ? partial.vobSubTracks : remotePlayer2State.vobSubTracks,
         audioTracks: Array.isArray(partial.audioTracks) ? partial.audioTracks : remotePlayer2State.audioTracks,
@@ -341,6 +349,7 @@ function buildPlayer2Snapshot() {
             updatedAt: Date.now(),
             subtitles: Array.isArray(subtitles2) ? [...subtitles2] : [],
             subtitlePath: lastSubtitlePath2 || null,
+            externalAssSubtitle: externalAssSubtitle2,
             subtitlesEnabled: subtitlesEnabled2 !== false,
             subtitleFontScale: subtitleFontScale2,
             vobSubTrack: vobSubTrack2,
@@ -1238,6 +1247,9 @@ async function hydrateLocalPlayer2FromSnapshot(snapshot, options) {
     suppressPlayer2StateBroadcast = true;
     try {
         subtitles2 = Array.isArray(state.subtitles) ? [...state.subtitles] : [];
+        externalAssSubtitle2 = state.externalAssSubtitle && typeof state.externalAssSubtitle.content === 'string'
+            ? state.externalAssSubtitle
+            : null;
         subtitlesEnabled2 = state.subtitlesEnabled !== false;
         lastSubtitlePath2 = typeof state.subtitlePath === 'string' ? state.subtitlePath : null;
         setAvailableVobSubTracks(2, state.vobSubTracks, state.vobSubTrack);
@@ -1301,7 +1313,11 @@ async function hydrateLocalPlayer2FromSnapshot(snapshot, options) {
         } else {
             applyState();
         }
-        configureVobSubTrack(VIDEO_PLAYER_IDS.video2, state.vobSubTrack, state.filePath || null);
+        if (externalAssSubtitle2) {
+            await applyAssSubtitleContent(2, externalAssSubtitle2.content, externalAssSubtitle2.path, { persist: false });
+        } else {
+            configureVobSubTrack(VIDEO_PLAYER_IDS.video2, state.vobSubTrack, state.filePath || null);
+        }
         configureAudioTrack(VIDEO_PLAYER_IDS.video2, state.audioTrack, state.filePath || null);
     } finally {
         suppressPlayer2StateBroadcast = false;
@@ -1344,7 +1360,9 @@ async function dockPlayer2ToOverlay() {
     const nextState = await electronAPI.setPlayer2Mode(PLAYER2_MODES.overlay);
     updatePlayer2ModeMenu(nextState);
     configureAudioTrack(VIDEO_PLAYER_IDS.video2, snapshot.audioTrack, snapshot.filePath || null);
-    configureVobSubTrack(VIDEO_PLAYER_IDS.video2, snapshot.vobSubTrack, snapshot.filePath || null);
+    if (!snapshot.externalAssSubtitle) {
+        configureVobSubTrack(VIDEO_PLAYER_IDS.video2, snapshot.vobSubTrack, snapshot.filePath || null);
+    }
 }
 
 async function handlePlayer2ModeToggle() {
@@ -1477,6 +1495,9 @@ async function initializeElectronContext() {
             const merged = mergeRemotePlayer2State(message.state);
             if (isValidTf(merged.tf)) tf2 = cloneTf(merged.tf);
             if (Array.isArray(merged.subtitles)) subtitles2 = [...merged.subtitles];
+            externalAssSubtitle2 = merged.externalAssSubtitle && typeof merged.externalAssSubtitle.content === 'string'
+                ? merged.externalAssSubtitle
+                : null;
             subtitlesEnabled2 = merged.subtitlesEnabled !== false;
             lastSubtitlePath2 = typeof merged.subtitlePath === 'string' ? merged.subtitlePath : null;
             vobSubTrack2 = merged.vobSubTrack || null;
@@ -2220,10 +2241,11 @@ async function openVideoFromDialog(video, playerId) {
         const selectedAudioTrack = prepareAudioTracks(playerId, selected, selected.path);
         configureAudioTrack(playerId, selectedAudioTrack, selected.path);
         const selectedVobSubTrack = prepareVobSubTracks(playerId, selected, selected.path);
-        configureVobSubTrack(playerId, selectedVobSubTrack, selected.path);
         if (selectedVobSubTrack) {
             await clearSubtitlesForPlayer(getPlayerNumFromPlayerId(playerId));
+            configureVobSubTrack(playerId, selectedVobSubTrack, selected.path);
         } else {
+            configureVobSubTrack(playerId, null, selected.path);
             await autoLoadSubtitleForVideo(playerId, selected.path);
         }
     } catch (error) {
@@ -2473,7 +2495,10 @@ function formatVobSubTrackLabel(track, index) {
     const title = String(track.title || '').trim();
     const flags = [track.forced ? 'forced' : '', track.default ? 'default' : ''].filter(Boolean);
     const details = title && title.toLowerCase() !== language.toLowerCase() ? `${language} — ${title}` : (title || language);
-    return `${index + 1}. ${details}${flags.length ? ` (${flags.join(', ')})` : ''}`;
+    const format = track.renderer === 'ass'
+        ? (String(track.codec).toLowerCase() === 'ssa' ? 'SSA' : 'ASS')
+        : 'VobSub';
+    return `${index + 1}. ${details} · ${format}${flags.length ? ` (${flags.join(', ')})` : ''}`;
 }
 
 function setVobSubLoadStatus(playerNum, state, message) {
@@ -2565,8 +2590,10 @@ async function selectVobSubTrackForPlayer(playerNum, streamIndex) {
         : tracks.find((candidate) => Number(candidate.streamIndex) === Number(streamIndex)) || null;
     const filePath = playerNum === 1 ? lastVideoPath1 : lastVideoPath2;
     persistVobSubChoice(playerNum, filePath, track);
-    configureVobSubTrack(playerNum === 1 ? VIDEO_PLAYER_IDS.video1 : VIDEO_PLAYER_IDS.video2, track, filePath);
+    const externalAss = playerNum === 1 ? externalAssSubtitle1 : externalAssSubtitle2;
+    if (!track && externalAss) return null;
     if (track) await clearSubtitlesForPlayer(playerNum);
+    configureVobSubTrack(playerNum === 1 ? VIDEO_PLAYER_IDS.video1 : VIDEO_PLAYER_IDS.video2, track, filePath);
     maybeBroadcastPlayer2State('vobsub-track');
     return track;
 }
@@ -2634,6 +2661,17 @@ function getVobSubModule() {
     });
 }
 
+function getAssSubtitleModule() {
+    if (window.assSubtitleAPI) return Promise.resolve(window.assSubtitleAPI);
+    return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('The ASS subtitle renderer did not load.')), 10000);
+        window.addEventListener('ass-subtitles-ready', () => {
+            clearTimeout(timeout);
+            resolve(window.assSubtitleAPI);
+        }, { once: true });
+    });
+}
+
 function toArrayBuffer(value) {
     if (value instanceof ArrayBuffer) return value;
     if (ArrayBuffer.isView(value)) {
@@ -2664,7 +2702,8 @@ function applyVobSubDisplaySettings(playerNum) {
 async function loadVobSubRenderer(playerNum, track, filePath) {
     disposeVobSubRenderer(playerNum);
     const generation = playerNum === 1 ? vobSubLoadGeneration1 : vobSubLoadGeneration2;
-    if (!electronAPI || !track || !filePath || typeof electronAPI.loadVobSubTrack !== 'function') {
+    const loadEmbeddedTrack = electronAPI?.loadEmbeddedSubtitleTrack || electronAPI?.loadVobSubTrack;
+    if (!electronAPI || !track || !filePath || typeof loadEmbeddedTrack !== 'function') {
         setVobSubLoadStatus(playerNum, track ? 'error' : 'off', track ? 'Embedded subtitle loader unavailable' : 'Embedded subtitles off');
         return;
     }
@@ -2675,23 +2714,27 @@ async function loadVobSubRenderer(playerNum, track, filePath) {
     const trackLabel = formatVobSubTrackLabel(track, Math.max(0, trackIndex));
     setVobSubLoadStatus(playerNum, 'loading', `Loading ${trackLabel}…`);
     try {
+        const isAss = track.renderer === 'ass';
         const [moduleApi, payload] = await Promise.all([
-            getVobSubModule(),
-            electronAPI.loadVobSubTrack(filePath, expectedStreamIndex)
+            isAss ? getAssSubtitleModule() : getVobSubModule(),
+            loadEmbeddedTrack(filePath, expectedStreamIndex)
         ]);
-        await moduleApi.ready;
+        if (moduleApi.ready) await moduleApi.ready;
         const currentGeneration = playerNum === 1 ? vobSubLoadGeneration1 : vobSubLoadGeneration2;
         const currentPath = playerNum === 1 ? lastVideoPath1 : lastVideoPath2;
         const currentTrack = getVobSubTrack(playerNum);
         if (currentGeneration !== generation || currentPath !== expectedPath || Number(currentTrack?.streamIndex) !== expectedStreamIndex) return;
 
-        const subContent = toArrayBuffer(payload?.content);
-        if (!subContent) throw new Error('The extracted VobSub track was empty.');
+        const subContent = isAss ? String(payload?.content || '') : toArrayBuffer(payload?.content);
+        if (!subContent || (typeof subContent === 'string' && !subContent.trim())) {
+            throw new Error('The extracted embedded subtitle track was empty.');
+        }
         const videoElement = playerNum === 1 ? video1 : video2;
         const renderer = moduleApi.createRenderer({
             video: videoElement,
             subContent,
-            fileName: payload.fileName || 'track.mks',
+            fileName: payload.fileName || (isAss ? 'track.ass' : 'track.mks'),
+            fonts: Array.isArray(payload?.fonts) ? payload.fonts : [],
             cacheLimit: 48,
             prefetchWindow: { before: 1, after: 2 },
             displaySettings: {
@@ -2705,9 +2748,9 @@ async function loadVobSubRenderer(playerNum, track, filePath) {
                     syncVobSubRendererTransform(playerNum);
                     const language = track.language && track.language !== 'und' ? ` (${track.language})` : '';
                     setVobSubLoadStatus(playerNum, 'ready', `Ready: ${trackLabel}`);
-                    showControlNotification(`VobSub${language} ready`);
+                    showControlNotification(`${isAss ? 'ASS' : 'VobSub'}${language} ready`);
                 } else if (event.type === 'error') {
-                    console.error('VobSub renderer error:', event.error);
+                    console.error('Embedded subtitle renderer error:', event.error);
                     setVobSubLoadStatus(playerNum, 'error', `Could not load ${trackLabel}`);
                 }
             }
@@ -2716,9 +2759,9 @@ async function loadVobSubRenderer(playerNum, track, filePath) {
     } catch (error) {
         const activeGeneration = playerNum === 1 ? vobSubLoadGeneration1 : vobSubLoadGeneration2;
         if (activeGeneration !== generation) return;
-        console.error('Could not load embedded VobSub:', error);
+        console.error('Could not load embedded subtitle:', error);
         setVobSubLoadStatus(playerNum, 'error', `Could not load ${trackLabel}`);
-        showControlNotification(`Could not load VobSub ${playerNum}`);
+        showControlNotification(`Could not load subtitles ${playerNum}`);
     }
 }
 
@@ -2803,28 +2846,34 @@ function getPlayerNumFromPlayerId(playerId) {
 
 function hasSubtitleForPlayer(playerNum) {
     const subtitles = playerNum === 1 ? subtitles1 : subtitles2;
-    return Array.isArray(subtitles) && subtitles.length > 0;
+    const externalAss = playerNum === 1 ? externalAssSubtitle1 : externalAssSubtitle2;
+    return (Array.isArray(subtitles) && subtitles.length > 0) || !!externalAss;
 }
 
 async function clearSubtitlesForPlayer(playerNum, options = {}) {
     const playerId = playerNum === 1 ? VIDEO_PLAYER_IDS.video1 : VIDEO_PLAYER_IDS.video2;
+    const hadExternalAss = !!(playerNum === 1 ? externalAssSubtitle1 : externalAssSubtitle2);
 
     if (playerNum === 1) {
         subtitles1 = [];
+        externalAssSubtitle1 = null;
         lastSubtitlePath1 = null;
         updateSubtitles(1, video1.currentTime || 0);
     } else {
         subtitles2 = [];
+        externalAssSubtitle2 = null;
         lastSubtitlePath2 = null;
         updateSubtitles(2, getPlayer2Time());
 
         if (isMainWindow() && isElectronWindowMode()) {
-            mergeRemotePlayer2State({ subtitles: [], subtitlePath: null });
+            mergeRemotePlayer2State({ subtitles: [], subtitlePath: null, externalAssSubtitle: null });
             sendHydrateToPlayer2Window();
         } else {
             maybeBroadcastPlayer2State('subtitle-clear');
         }
     }
+
+    if (hadExternalAss) disposeVobSubRenderer(playerNum);
 
     if (options.persist !== false && electronAPI && typeof electronAPI.setLastSubtitle === 'function') {
         try { await electronAPI.setLastSubtitle(playerId, null); } catch { }
@@ -2852,7 +2901,7 @@ async function openSubtitleFromDialog(playerNum) {
     try {
         const selected = await electronAPI.openSubtitleFile();
         if (!selected || !selected.path || typeof selected.content !== 'string') return;
-        await applySubtitleContent(playerNum, selected.content, selected.path);
+        await applySubtitleFile(playerNum, selected.content, selected.path, selected.format);
     } catch {
         // no-op
     }
@@ -2897,11 +2946,11 @@ async function restoreLastPlayedSubtitles() {
         ]);
 
         if (last1 && typeof last1.content === 'string' && isMainWindow() && !vobSubTrack1) {
-            await applySubtitleContent(1, last1.content, last1.path, { persist: false });
+            await applySubtitleFile(1, last1.content, last1.path, last1.format, { persist: false });
         }
 
         if (last2 && typeof last2.content === 'string' && !vobSubTrack2) {
-            await applySubtitleContent(2, last2.content, last2.path, { persist: false });
+            await applySubtitleFile(2, last2.content, last2.path, last2.format, { persist: false });
         }
     } catch {
         // no-op: app still works without restoring prior subtitles
@@ -2911,11 +2960,17 @@ async function restoreLastPlayedSubtitles() {
 async function loadVideoFromSource(video, src, playerId, localPath, options) {
     if (!video || !src) return;
     const opts = options || {};
+    const playerNum = getPlayerNumFromPlayerId(playerId);
+
+    // An embedded subtitle renderer belongs to one specific media source. Tear it
+    // down before changing the video so a matching stream index in the next file
+    // cannot accidentally reuse the previous file's ASS/VobSub renderer.
+    disposeVobSubRenderer(playerNum);
     if (!opts.skipMetadataProbe) {
         await ensureFrameRateForVideo(playerId, localPath, opts);
     }
     if (opts.clearSubtitles !== false) {
-        await clearSubtitlesForPlayer(getPlayerNumFromPlayerId(playerId), {
+        await clearSubtitlesForPlayer(playerNum, {
             persist: opts.persist !== false
         });
     }
@@ -3317,10 +3372,10 @@ function renderTimeDisplay(timeDisplay, current, total) {
 
 function loadSubtitle(event, playerNum) {
     const file = event.target.files[0];
-    if (file && file.name.endsWith('.srt')) {
+    if (file && /\.(?:srt|ass|ssa)$/i.test(file.name)) {
         const reader = new FileReader();
         reader.onload = function (e) {
-            applySubtitleContent(playerNum, e.target.result, file.path || null, {
+            applySubtitleFile(playerNum, e.target.result, file.path || null, file.name.split('.').pop(), {
                 persist: !!file.path
             });
         };
@@ -3328,12 +3383,108 @@ function loadSubtitle(event, playerNum) {
     }
 }
 
+function isAssSubtitle(format, localPath, content) {
+    const normalizedFormat = String(format || '').trim().toLowerCase();
+    if (normalizedFormat === 'ass' || normalizedFormat === 'ssa') return true;
+    if (/\.(?:ass|ssa)$/i.test(String(localPath || ''))) return true;
+    return /^\s*\[Script Info\]/im.test(String(content || ''));
+}
+
+async function applySubtitleFile(playerNum, content, localPath, format, options = {}) {
+    if (isAssSubtitle(format, localPath, content)) {
+        return applyAssSubtitleContent(playerNum, content, localPath, options);
+    }
+    return applySubtitleContent(playerNum, content, localPath, options);
+}
+
+async function applyAssSubtitleContent(playerNum, assContent, localPath, options = {}) {
+    const content = String(assContent || '').replace(/^\uFEFF/, '');
+    if (!content.trim()) return;
+    const subtitlePath = typeof localPath === 'string' && localPath ? localPath : null;
+    const externalAss = { content, path: subtitlePath };
+    const playerId = playerNum === 1 ? VIDEO_PLAYER_IDS.video1 : VIDEO_PLAYER_IDS.video2;
+
+    disposeVobSubRenderer(playerNum);
+    setVobSubTrack(playerNum, null);
+    persistVobSubChoice(playerNum, playerNum === 1 ? lastVideoPath1 : lastVideoPath2, null);
+    if (playerNum === 1) {
+        subtitles1 = [];
+        externalAssSubtitle1 = externalAss;
+        lastSubtitlePath1 = subtitlePath;
+        updateSubtitles(1, video1.currentTime || 0);
+    } else {
+        subtitles2 = [];
+        externalAssSubtitle2 = externalAss;
+        lastSubtitlePath2 = subtitlePath;
+        updateSubtitles(2, getPlayer2Time());
+    }
+
+    if (options.persist !== false && electronAPI && subtitlePath) {
+        try { await electronAPI.setLastSubtitle(playerId, subtitlePath); } catch { }
+    }
+
+    if (playerNum === 2 && isMainWindow() && isElectronWindowMode()) {
+        mergeRemotePlayer2State({
+            subtitles: [],
+            subtitlePath,
+            externalAssSubtitle: externalAss,
+            vobSubTrack: null
+        });
+        sendHydrateToPlayer2Window();
+        return;
+    }
+
+    const generation = playerNum === 1 ? vobSubLoadGeneration1 : vobSubLoadGeneration2;
+    const label = subtitlePath ? `ASS — ${subtitlePath.split(/[\\/]/).pop()}` : 'ASS subtitles';
+    setVobSubLoadStatus(playerNum, 'loading', `Loading ${label}…`);
+    try {
+        const moduleApi = await getAssSubtitleModule();
+        const activeExternal = playerNum === 1 ? externalAssSubtitle1 : externalAssSubtitle2;
+        const activeGeneration = playerNum === 1 ? vobSubLoadGeneration1 : vobSubLoadGeneration2;
+        if (activeGeneration !== generation || activeExternal !== externalAss) return;
+        const renderer = moduleApi.createRenderer({
+            video: playerNum === 1 ? video1 : video2,
+            subContent: content,
+            fonts: [],
+            displaySettings: {
+                scale: Math.max(0.1, Math.min(3, playerNum === 1 ? subtitleFontScale1 : subtitleFontScale2)),
+                opacity: (playerNum === 1 ? subtitlesEnabled1 : subtitlesEnabled2) ? 1 : 0
+            },
+            onEvent: (event) => {
+                const currentGeneration = playerNum === 1 ? vobSubLoadGeneration1 : vobSubLoadGeneration2;
+                if (currentGeneration !== generation) return;
+                if (event.type === 'loaded') {
+                    syncVobSubRendererTransform(playerNum);
+                    setVobSubLoadStatus(playerNum, 'ready', `Ready: ${label}`);
+                    showControlNotification(`ASS ${playerNum} ready`);
+                } else if (event.type === 'error') {
+                    console.error('External ASS renderer error:', event.error);
+                    setVobSubLoadStatus(playerNum, 'error', `Could not load ${label}`);
+                }
+            }
+        });
+        setVobSubRenderer(playerNum, renderer);
+        await renderer.ready;
+        if (playerNum === 2) maybeBroadcastPlayer2State('subtitle-load');
+    } catch (error) {
+        const activeGeneration = playerNum === 1 ? vobSubLoadGeneration1 : vobSubLoadGeneration2;
+        if (activeGeneration !== generation) return;
+        console.error('Could not load external ASS subtitles:', error);
+        setVobSubLoadStatus(playerNum, 'error', `Could not load ${label}`);
+    }
+}
+
 async function applySubtitleContent(playerNum, srtContent, localPath, options = {}) {
     const parsedSubtitles = parseSRT(srtContent);
     const subtitlePath = typeof localPath === 'string' && localPath ? localPath : null;
 
+    disposeVobSubRenderer(playerNum);
+    setVobSubTrack(playerNum, null);
+    persistVobSubChoice(playerNum, playerNum === 1 ? lastVideoPath1 : lastVideoPath2, null);
+
     if (playerNum === 1) {
         subtitles1 = parsedSubtitles;
+        externalAssSubtitle1 = null;
         lastSubtitlePath1 = subtitlePath;
         updateSubtitles(1, video1.currentTime || 0);
         if (options.persist !== false && electronAPI && subtitlePath) {
@@ -3343,6 +3494,7 @@ async function applySubtitleContent(playerNum, srtContent, localPath, options = 
     }
 
     subtitles2 = parsedSubtitles;
+    externalAssSubtitle2 = null;
     lastSubtitlePath2 = subtitlePath;
     updateSubtitles(2, getPlayer2Time());
 
@@ -3353,7 +3505,9 @@ async function applySubtitleContent(playerNum, srtContent, localPath, options = 
     if (isMainWindow() && isElectronWindowMode()) {
         mergeRemotePlayer2State({
             subtitles: Array.isArray(subtitles2) ? [...subtitles2] : [],
-            subtitlePath: lastSubtitlePath2
+            subtitlePath: lastSubtitlePath2,
+            externalAssSubtitle: null,
+            vobSubTrack: null
         });
         sendHydrateToPlayer2Window();
     } else {
@@ -3526,6 +3680,7 @@ function swapVideos() {
             playbackRate: Number.isFinite(video1.playbackRate) ? video1.playbackRate : globalPlaybackRate,
             subtitles: Array.isArray(subtitles1) ? [...subtitles1] : [],
             subtitlePath: lastSubtitlePath1 || null,
+            externalAssSubtitle: externalAssSubtitle1,
             subtitlesEnabled: subtitlesEnabled1 !== false,
             subtitleFontScale: subtitleFontScale1,
             vobSubTrack: vobSubTrack1,
@@ -3541,6 +3696,8 @@ function swapVideos() {
 
         subtitles1 = Array.isArray(player2State.subtitles) ? [...player2State.subtitles] : [];
         subtitles2 = Array.isArray(player1State.subtitles) ? [...player1State.subtitles] : [];
+        externalAssSubtitle1 = player2State.externalAssSubtitle || null;
+        externalAssSubtitle2 = player1State.externalAssSubtitle || null;
         lastSubtitlePath1 = player2State.subtitlePath || null;
         lastSubtitlePath2 = player1State.subtitlePath || null;
         subtitlesEnabled1 = player2State.subtitlesEnabled !== false;
@@ -3577,7 +3734,11 @@ function swapVideos() {
             if (player2State.src) {
                 await loadVideoFromSource(video1, player2State.src, VIDEO_PLAYER_IDS.video1, player2State.filePath, { persist: false, clearSubtitles: false });
                 configureAudioTrack(VIDEO_PLAYER_IDS.video1, player2State.audioTrack, player2State.filePath);
-                configureVobSubTrack(VIDEO_PLAYER_IDS.video1, player2State.vobSubTrack, player2State.filePath);
+                if (player2State.externalAssSubtitle) {
+                    applyAssSubtitleContent(1, player2State.externalAssSubtitle.content, player2State.externalAssSubtitle.path, { persist: false });
+                } else {
+                    configureVobSubTrack(VIDEO_PLAYER_IDS.video1, player2State.vobSubTrack, player2State.filePath);
+                }
             } else {
                 try { video1.pause(); } catch { }
                 video1.removeAttribute('src');
@@ -3638,6 +3799,8 @@ function swapVideos() {
     const tempSubtitles2 = [...subtitles2];
     const tempSubtitlePath1 = lastSubtitlePath1;
     const tempSubtitlePath2 = lastSubtitlePath2;
+    const tempExternalAssSubtitle1 = externalAssSubtitle1;
+    const tempExternalAssSubtitle2 = externalAssSubtitle2;
     const tempSubtitlesEnabled1 = subtitlesEnabled1;
     const tempSubtitlesEnabled2 = subtitlesEnabled2;
     const tempSubtitleFontScale1 = subtitleFontScale1;
@@ -3669,6 +3832,8 @@ function swapVideos() {
     disposeVobSubRenderer(2);
     lastVideoPath1 = tempPath2;
     lastVideoPath2 = tempPath1;
+    externalAssSubtitle1 = tempExternalAssSubtitle2;
+    externalAssSubtitle2 = tempExternalAssSubtitle1;
     vobSubTrack1 = tempVobSubTrack2;
     vobSubTrack2 = tempVobSubTrack1;
     setAvailableVobSubTracks(1, tempVobSubTracks2, vobSubTrack1);
@@ -3679,8 +3844,16 @@ function swapVideos() {
     setAvailableAudioTracks(2, tempAudioTracks1, audioTrack2);
     configureAudioTrack(VIDEO_PLAYER_IDS.video1, audioTrack1, lastVideoPath1);
     configureAudioTrack(VIDEO_PLAYER_IDS.video2, audioTrack2, lastVideoPath2);
-    loadVobSubRenderer(1, vobSubTrack1, lastVideoPath1);
-    loadVobSubRenderer(2, vobSubTrack2, lastVideoPath2);
+    if (externalAssSubtitle1) {
+        applyAssSubtitleContent(1, externalAssSubtitle1.content, externalAssSubtitle1.path, { persist: false });
+    } else {
+        loadVobSubRenderer(1, vobSubTrack1, lastVideoPath1);
+    }
+    if (externalAssSubtitle2) {
+        applyAssSubtitleContent(2, externalAssSubtitle2.content, externalAssSubtitle2.path, { persist: false });
+    } else {
+        loadVobSubRenderer(2, vobSubTrack2, lastVideoPath2);
+    }
     if (electronAPI) {
         if (lastVideoPath1) electronAPI.setLastVideo(VIDEO_PLAYER_IDS.video1, lastVideoPath1).catch(() => { });
         if (lastVideoPath2) electronAPI.setLastVideo(VIDEO_PLAYER_IDS.video2, lastVideoPath2).catch(() => { });
@@ -4765,10 +4938,13 @@ function toggleOverlay() {
 document.addEventListener('DOMContentLoaded', initializePlayers);
 if (new URLSearchParams(window.location.search).has('vobsub-smoke')) {
     window.__dvsVobSubSmoke = {
+        applyFile: applySubtitleFile,
+        getRenderer: getVobSubRenderer,
         getTrack: getVobSubTrack,
         persistChoice: persistVobSubChoice,
         prepareTracks: prepareVobSubTracks,
         selectTrack: selectVobSubTrackForPlayer,
+        loadSource: loadVideoFromSource,
         setVideoPath(playerNum, filePath) {
             if (playerNum === 1) lastVideoPath1 = filePath;
             if (playerNum === 2) lastVideoPath2 = filePath;

@@ -49,6 +49,14 @@
         "to": "web/electron/renderer/bitmap-subtitles.js"
       },
       {
+        "from": "renderer/ass-subtitles.js",
+        "to": "web/electron/renderer/ass-subtitles.js"
+      },
+      {
+        "from": "renderer/jassub-worker.js",
+        "to": "web/electron/renderer/jassub-worker.js"
+      },
+      {
         "from": "renderer/libbitsub_bg.wasm",
         "to": "web/electron/renderer/libbitsub_bg.wasm"
       },
@@ -83,6 +91,7 @@
   "dependencies": {
     "@derhuerst/ffprobe-static": "5.3.0",
     "ffmpeg-static": "5.3.0",
+    "jassub": "2.5.7",
     "libbitsub": "1.10.1"
   }
 }

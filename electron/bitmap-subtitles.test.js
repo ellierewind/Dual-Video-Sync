@@ -4,10 +4,14 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const {
+  buildAssExtractionArgs,
+  buildAttachmentExtractionArgs,
   buildSubtitleExtractionArgs,
   chooseAudioTrack,
   chooseVobSubTrack,
   listAudioTracks,
+  listEmbeddedSubtitleTracks,
+  listFontAttachments,
   listVobSubTracks,
   needsDynamicAudio,
   parseFrameRate
@@ -32,6 +36,30 @@ test('VobSub discovery ignores video, audio, and text subtitle streams', () => {
   ]);
   assert.deepEqual(tracks.map((track) => track.streamIndex), [3]);
   assert.equal(tracks[0].language, 'eng');
+});
+
+test('embedded subtitle discovery includes ASS, SSA, and VobSub without plain text tracks', () => {
+  const tracks = listEmbeddedSubtitleTracks([
+    stream(0, 'video', 'h264'),
+    stream(1, 'subtitle', 'subrip'),
+    { ...stream(2, 'subtitle', 'ass'), tags: { language: 'eng' } },
+    { ...stream(3, 'subtitle', 'ssa'), tags: { language: 'jpn' } },
+    stream(4, 'subtitle', 'dvd_subtitle')
+  ]);
+  assert.deepEqual(tracks.map((track) => [track.streamIndex, track.renderer]), [
+    [2, 'ass'], [3, 'ass'], [4, 'bitmap']
+  ]);
+});
+
+test('font attachment discovery accepts common embedded font formats only', () => {
+  const attachments = listFontAttachments([
+    { ...stream(3, 'attachment', 'ttf'), tags: { filename: 'Title.ttf', mimetype: 'application/x-truetype-font' } },
+    { ...stream(4, 'attachment', 'bin'), tags: { filename: 'poster.jpg', mimetype: 'image/jpeg' } },
+    { ...stream(5, 'attachment', 'otf'), tags: { filename: 'Signs.otf', mimetype: 'font/otf' } }
+  ]);
+  assert.deepEqual(attachments.map((font) => [font.streamIndex, font.attachmentIndex, font.extension]), [
+    [3, 0, '.ttf'], [5, 2, '.otf']
+  ]);
 });
 
 test('track selection always prefers English before non-English tracks', () => {
@@ -100,7 +128,9 @@ test('both players expose subtitle and audio selectors with loading indicators',
     assert.match(html, new RegExp(`id="audioTrackSelect${playerNum}"`));
     assert.match(html, new RegExp(`id="audioTrackStatus${playerNum}"`));
     assert.match(html, new RegExp(`id="audioIndicator${playerNum}"`));
+    assert.match(html, new RegExp(`id="subtitle${playerNum}"[^>]+accept="[^"]*\\.ass,[^"]*\\.ssa`));
   }
+  assert.match(html, /renderer\/ass-subtitles\.js/);
 });
 
 test('subtitle extraction copies only the selected subtitle stream', () => {
@@ -110,4 +140,19 @@ test('subtitle extraction copies only the selected subtitle stream', () => {
   assert.match(joined, /-c:s copy/);
   assert.match(joined, /-f matroska/);
   assert.doesNotMatch(joined, /-c:v|-c:a|overlay|libx264/);
+});
+
+test('ASS extraction preserves the selected script without touching audio or video', () => {
+  const args = buildAssExtractionArgs('movie.mkv', 'track.ass', 7);
+  const joined = args.join(' ');
+  assert.match(joined, /-map 0:7/);
+  assert.match(joined, /-c:s copy/);
+  assert.match(joined, /-f ass/);
+  assert.doesNotMatch(joined, /-c:v|-c:a|overlay|libx264/);
+});
+
+test('font extraction uses FFmpeg attachment dumping for one selected attachment', () => {
+  const args = buildAttachmentExtractionArgs('movie.mkv', 'font.ttf', 2);
+  assert.match(args.join(' '), /-dump_attachment:t:2 font\.ttf/);
+  assert.doesNotMatch(args.join(' '), /overlay|libx264/);
 });
