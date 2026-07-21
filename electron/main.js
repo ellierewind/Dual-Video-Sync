@@ -1,8 +1,9 @@
 const { app, BrowserWindow, dialog, ipcMain } = require('electron');
-const { execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { pathToFileURL } = require('url');
+const { BitmapSubtitleService } = require('./bitmap-subtitles');
+const { DynamicAudioService } = require('./dynamic-audio');
 
 const PREFS_FILE = 'prefs.json';
 const PLAYER_IDS = new Set(['video1', 'video2']);
@@ -12,6 +13,8 @@ let mainWindow = null;
 let player2Window = null;
 let closingPairedWindows = false;
 let closingPlayer2ForModeChange = false;
+const bitmapSubtitleService = new BitmapSubtitleService(app);
+const dynamicAudioService = new DynamicAudioService(app);
 
 function getPrefsPath() {
   return path.join(app.getPath('userData'), PREFS_FILE);
@@ -63,50 +66,37 @@ function findMatchingSubtitleForVideo(videoPath) {
   return fs.existsSync(subtitlePath) ? resolveSubtitleFile(subtitlePath) : null;
 }
 
-function parseFrameRate(value) {
-  if (typeof value !== 'string' || !value) return null;
-  const parts = value.split('/');
-  const fps = parts.length === 2
-    ? Number(parts[0]) / Number(parts[1])
-    : Number(value);
-  return Number.isFinite(fps) && fps > 0 ? fps : null;
+async function probeVideoMetadata(videoPath) {
+  if (!videoPath || typeof videoPath !== 'string') return null;
+  try {
+    return await bitmapSubtitleService.getVideoMetadata(videoPath);
+  } catch {
+    return null;
+  }
 }
 
-function probeVideoMetadata(videoPath) {
-  if (!videoPath || typeof videoPath !== 'string') return Promise.resolve(null);
-
-  return new Promise((resolve) => {
-    execFile('ffprobe', [
-      '-v', 'error',
-      '-select_streams', 'v:0',
-      '-show_entries', 'stream=avg_frame_rate,r_frame_rate',
-      '-of', 'json',
-      videoPath
-    ], { windowsHide: true }, (error, stdout) => {
-      if (error || !stdout) {
-        resolve(null);
-        return;
-      }
-
-      try {
-        const parsed = JSON.parse(stdout);
-        const stream = Array.isArray(parsed.streams) ? parsed.streams[0] : null;
-        const frameRate = parseFrameRate(stream?.avg_frame_rate) || parseFrameRate(stream?.r_frame_rate);
-        resolve(frameRate ? { frameRate } : null);
-      } catch {
-        resolve(null);
-      }
-    });
-  });
-}
-
-function resolveVideoFile(filePath) {
+async function resolveVideoFile(filePath, options = {}) {
   const selected = resolveFile(filePath);
-  if (!selected) return Promise.resolve(null);
-  return probeVideoMetadata(filePath).then((metadata) => ({
-    ...selected,
-    ...(metadata || {})
-  }));
+  if (!selected) return null;
+  try {
+    const inspected = await bitmapSubtitleService.inspectVideo(filePath);
+    return {
+      ...selected,
+      ...(Number.isFinite(inspected.frameRate) ? { frameRate: inspected.frameRate } : {}),
+      vobSubTracks: inspected.vobSubTracks,
+      selectedVobSubTrack: inspected.selectedVobSubTrack,
+      audioTracks: inspected.audioTracks,
+      selectedAudioTrack: inspected.selectedAudioTrack
+    };
+  } catch {
+    return {
+      ...selected,
+      vobSubTracks: [],
+      selectedVobSubTrack: null,
+      audioTracks: [],
+      selectedAudioTrack: null
+    };
+  }
 }
 
 function normalizePlaybackSession(value) {
@@ -290,6 +280,7 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
+  dynamicAudioService.dispose();
   if (process.platform !== 'darwin') app.quit();
 });
 
@@ -371,6 +362,26 @@ ipcMain.handle('prefs:set-last-subtitle', (_event, { playerId, filePath }) => {
 
 ipcMain.handle('subtitle:find-for-video', (_event, videoPath) => {
   return findMatchingSubtitleForVideo(videoPath);
+});
+
+ipcMain.handle('subtitle:load-vobsub-track', (_event, { filePath, streamIndex }) => {
+  if (typeof filePath !== 'string' || !filePath || !Number.isInteger(Number(streamIndex))) return null;
+  return bitmapSubtitleService.loadTrack(filePath, Number(streamIndex));
+});
+
+ipcMain.handle('audio:prepare-track', async (event, { filePath, streamIndex, requestId }) => {
+  if (typeof filePath !== 'string' || !filePath || !Number.isInteger(Number(streamIndex))) return null;
+  const inspected = await bitmapSubtitleService.inspectVideo(filePath);
+  const track = inspected.audioTracks.find((candidate) => candidate.streamIndex === Number(streamIndex));
+  if (!track) throw new Error('The requested audio track was not found.');
+  return {
+    ...await dynamicAudioService.prepareTrack(filePath, track, (progress) => {
+      if (!event.sender.isDestroyed()) {
+        event.sender.send('audio:conversion-progress', { requestId, progress });
+      }
+    }),
+    track
+  };
 });
 
 ipcMain.handle('prefs:get-playback-session', () => {

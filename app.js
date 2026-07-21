@@ -18,6 +18,20 @@ let subtitleFontScale1 = 1;
 let subtitleFontScale2 = 1;
 let lastSubtitlePath1 = null;
 let lastSubtitlePath2 = null;
+let vobSubTrack1 = null;
+let vobSubTrack2 = null;
+let vobSubTracks1 = [];
+let vobSubTracks2 = [];
+let vobSubRenderer1 = null;
+let vobSubRenderer2 = null;
+let vobSubLoadGeneration1 = 0;
+let vobSubLoadGeneration2 = 0;
+let audioTrack1 = null;
+let audioTrack2 = null;
+let audioTracks1 = [];
+let audioTracks2 = [];
+let dynamicAudioPlayer1 = null;
+let dynamicAudioPlayer2 = null;
 const SUBTITLE_FONT_SCALE_STEP = 0.1;
 const SUBTITLE_FONT_SCALE_MIN = 0.1;
 const DEFAULT_FRAME_RATE = 30;
@@ -79,6 +93,10 @@ const LS_KEYS = {
     video2Tf: 'dvs:video2:tf',
     subtitleFontScale1: 'dvs:subtitle1:fontScale',
     subtitleFontScale2: 'dvs:subtitle2:fontScale',
+    vobSubChoice1: 'dvs:vobsub1:choice',
+    vobSubChoice2: 'dvs:vobsub2:choice',
+    audioChoice1: 'dvs:audio1:choice',
+    audioChoice2: 'dvs:audio2:choice',
     profiles: 'dvs:profiles'
 };
 const ELECTRON_SESSION_SAVE_DELAY_MS = 700;
@@ -211,6 +229,10 @@ function createEmptyPlayer2State() {
         subtitlePath: null,
         subtitlesEnabled: true,
         subtitleFontScale: 1,
+        vobSubTrack: null,
+        vobSubTracks: [],
+        audioTrack: null,
+        audioTracks: [],
         frameRate: DEFAULT_FRAME_RATE,
         tf: {
             zoom: 1,
@@ -254,6 +276,8 @@ function mergeRemotePlayer2State(partial) {
         subtitles: Array.isArray(partial.subtitles) ? partial.subtitles : remotePlayer2State.subtitles,
         subtitlePath: typeof partial.subtitlePath === 'string' ? partial.subtitlePath : remotePlayer2State.subtitlePath,
         subtitleFontScale: Number.isFinite(partial.subtitleFontScale) ? normalizeSubtitleFontScale(partial.subtitleFontScale) : remotePlayer2State.subtitleFontScale,
+        vobSubTracks: Array.isArray(partial.vobSubTracks) ? partial.vobSubTracks : remotePlayer2State.vobSubTracks,
+        audioTracks: Array.isArray(partial.audioTracks) ? partial.audioTracks : remotePlayer2State.audioTracks,
         tf: isValidTf(partial.tf) ? cloneTf(partial.tf) : remotePlayer2State.tf
     };
     return remotePlayer2State;
@@ -312,13 +336,17 @@ function buildPlayer2Snapshot() {
             duration: video2.duration || 0,
             paused: !!video2.paused,
             volume: Number.isFinite(video2.volume) ? video2.volume : 1,
-            muted: !!video2.muted,
+            muted: getPlayerMuted(2),
             playbackRate: Number.isFinite(video2.playbackRate) ? video2.playbackRate : globalPlaybackRate,
             updatedAt: Date.now(),
             subtitles: Array.isArray(subtitles2) ? [...subtitles2] : [],
             subtitlePath: lastSubtitlePath2 || null,
             subtitlesEnabled: subtitlesEnabled2 !== false,
             subtitleFontScale: subtitleFontScale2,
+            vobSubTrack: vobSubTrack2,
+            vobSubTracks: [...vobSubTracks2],
+            audioTrack: audioTrack2,
+            audioTracks: [...audioTracks2],
             frameRate: getFrameRateForPlayer(2),
             tf: cloneTf(tf2)
         };
@@ -1071,10 +1099,12 @@ function applyTransform(videoNum) {
     const targetVideo = videoNum !== undefined ? videoNum : activeVideo;
     const tf = targetVideo === 1 ? tf1 : tf2;
     const video = targetVideo === 1 ? video1 : video2;
+    const mediaLayer = document.getElementById(`videoMediaLayer${targetVideo}`) || video;
 
     const sx = tf.zoom * tf.stretchX * tf.flipX;
     const sy = tf.zoom * tf.stretchY * tf.flipY;
-    video.style.transform = `translate(${tf.tx}px, ${tf.ty}px) rotate(${tf.rot}deg) scale(${sx}, ${sy})`;
+    mediaLayer.style.transform = `translate(${tf.tx}px, ${tf.ty}px) rotate(${tf.rot}deg) scale(${sx}, ${sy})`;
+    syncVobSubRendererTransform(targetVideo);
     if (targetVideo === 2 && isElectronWindowMode()) {
         remotePlayer2State.tf = cloneTf(tf2);
         sendHydrateToPlayer2Window();
@@ -1168,6 +1198,10 @@ function broadcastPlayer2Metadata(reason) {
             paused: !!video2.paused,
             playbackRate: Number.isFinite(video2.playbackRate) ? video2.playbackRate : globalPlaybackRate,
             frameRate: getFrameRateForPlayer(2),
+            vobSubTrack: vobSubTrack2,
+            vobSubTracks: [...vobSubTracks2],
+            audioTrack: audioTrack2,
+            audioTracks: [...audioTracks2],
             updatedAt: Date.now()
         }
     });
@@ -1206,6 +1240,8 @@ async function hydrateLocalPlayer2FromSnapshot(snapshot, options) {
         subtitles2 = Array.isArray(state.subtitles) ? [...state.subtitles] : [];
         subtitlesEnabled2 = state.subtitlesEnabled !== false;
         lastSubtitlePath2 = typeof state.subtitlePath === 'string' ? state.subtitlePath : null;
+        setAvailableVobSubTracks(2, state.vobSubTracks, state.vobSubTrack);
+        setAvailableAudioTracks(2, state.audioTracks, state.audioTrack);
         setFrameRateForPlayer(2, state.frameRate);
         setSubtitleFontScale(2, state.subtitleFontScale, { notify: false, broadcast: false });
         tf2 = nextTf;
@@ -1233,7 +1269,7 @@ async function hydrateLocalPlayer2FromSnapshot(snapshot, options) {
                 try { video2.playbackRate = state.playbackRate; } catch { }
             }
             if (Number.isFinite(state.volume)) video2.volume = state.volume;
-            video2.muted = !!state.muted;
+            setPlayerMuted(2, !!state.muted);
             if (Number.isFinite(state.currentTime) && (video2.duration || nextSrc)) {
                 try { video2.currentTime = state.currentTime; } catch { }
             }
@@ -1265,6 +1301,8 @@ async function hydrateLocalPlayer2FromSnapshot(snapshot, options) {
         } else {
             applyState();
         }
+        configureVobSubTrack(VIDEO_PLAYER_IDS.video2, state.vobSubTrack, state.filePath || null);
+        configureAudioTrack(VIDEO_PLAYER_IDS.video2, state.audioTrack, state.filePath || null);
     } finally {
         suppressPlayer2StateBroadcast = false;
     }
@@ -1294,14 +1332,19 @@ async function enterPlayer2WindowMode() {
     const nextState = await electronAPI.setPlayer2Mode(PLAYER2_MODES.window);
     updatePlayer2ModeMenu(nextState);
     try { video2.pause(); } catch { }
+    disposeVobSubRenderer(2);
+    getDynamicAudioPlayer(2)?.setTrack(null, null).catch(() => { });
     video2.removeAttribute('src');
     video2.load();
 }
 
 async function dockPlayer2ToOverlay() {
-    await hydrateLocalPlayer2FromSnapshot(buildPlayer2Snapshot(), { persist: false });
+    const snapshot = buildPlayer2Snapshot();
+    await hydrateLocalPlayer2FromSnapshot(snapshot, { persist: false });
     const nextState = await electronAPI.setPlayer2Mode(PLAYER2_MODES.overlay);
     updatePlayer2ModeMenu(nextState);
+    configureAudioTrack(VIDEO_PLAYER_IDS.video2, snapshot.audioTrack, snapshot.filePath || null);
+    configureVobSubTrack(VIDEO_PLAYER_IDS.video2, snapshot.vobSubTrack, snapshot.filePath || null);
 }
 
 async function handlePlayer2ModeToggle() {
@@ -1436,6 +1479,10 @@ async function initializeElectronContext() {
             if (Array.isArray(merged.subtitles)) subtitles2 = [...merged.subtitles];
             subtitlesEnabled2 = merged.subtitlesEnabled !== false;
             lastSubtitlePath2 = typeof merged.subtitlePath === 'string' ? merged.subtitlePath : null;
+            vobSubTrack2 = merged.vobSubTrack || null;
+            setAvailableVobSubTracks(2, merged.vobSubTracks, merged.vobSubTrack);
+            audioTrack2 = merged.audioTrack || null;
+            setAvailableAudioTracks(2, merged.audioTracks, merged.audioTrack);
             setFrameRateForPlayer(2, merged.frameRate);
             setSubtitleFontScale(2, merged.subtitleFontScale, { notify: false, broadcast: false });
             if (typeof merged.filePath === 'string') lastVideoPath2 = merged.filePath;
@@ -1456,6 +1503,10 @@ async function initializeElectronContext() {
 
         if (message.type === 'player2-metadata') {
             const merged = mergeRemotePlayer2State(message.state);
+            vobSubTrack2 = merged.vobSubTrack || null;
+            setAvailableVobSubTracks(2, merged.vobSubTracks, merged.vobSubTrack);
+            audioTrack2 = merged.audioTrack || null;
+            setAvailableAudioTracks(2, merged.audioTracks, merged.audioTrack);
             setFrameRateForPlayer(2, merged.frameRate);
             if (typeof merged.filePath === 'string') lastVideoPath2 = merged.filePath;
             schedulePersistElectronPlaybackSession();
@@ -1621,6 +1672,7 @@ async function initializeElectronContext() {
 // Initialize players
 async function initializePlayers() {
     await initializeElectronContext();
+    ensureDynamicAudioPlayers();
 
     // File inputs
     document.getElementById('file1').addEventListener('change', (e) => loadVideo(e, video1, VIDEO_PLAYER_IDS.video1));
@@ -1636,6 +1688,10 @@ async function initializePlayers() {
     // Settings dropdowns: open/close + actions
     setupDropdown('1');
     setupDropdown('2');
+    setupAudioTrackSelector(1);
+    setupAudioTrackSelector(2);
+    setupVobSubTrackSelector(1);
+    setupVobSubTrackSelector(2);
     setupSubtitleFontSizeControls(1);
     setupSubtitleFontSizeControls(2);
     restoreSubtitleFontScales();
@@ -1993,6 +2049,7 @@ function setSubtitleFontScale(playerNum, scale, options = {}) {
     }
 
     if (display) display.style.setProperty('--subtitle-font-scale', String(nextScale));
+    applyVobSubDisplaySettings(playerNum);
     updateSubtitleFontScaleUI(playerNum);
     lsSet(playerNum === 1 ? LS_KEYS.subtitleFontScale1 : LS_KEYS.subtitleFontScale2, String(nextScale));
 
@@ -2043,6 +2100,12 @@ function setupDropdown(id) {
     if (!dropdown) return;
     const toggle = document.getElementById(`settingsToggle${id}`);
     const ccItem = document.getElementById(`ccToggle${id}`);
+
+    // Interactive controls inside the menu must not reach the document-level
+    // click handler, or native selects immediately lose their open menu.
+    dropdown.querySelector('.dropdown-menu')?.addEventListener('click', (event) => {
+        event.stopPropagation();
+    });
 
     const closeAll = () => {
         document.querySelectorAll('.dropdown.open').forEach(d => d.classList.remove('open'));
@@ -2150,14 +2213,532 @@ function setupElectronFilePickers() {
 async function openVideoFromDialog(video, playerId) {
     if (!electronAPI) return;
     try {
-        const selected = await electronAPI.openVideoFile();
+        const selected = await electronAPI.openVideoFile(playerId);
         if (!selected || !selected.path || !selected.fileUrl) return;
         applyVideoMetadata(playerId, selected, { notifyOnFailure: true });
-        await loadVideoFromSource(video, selected.fileUrl, playerId, selected.path);
-        await autoLoadSubtitleForVideo(playerId, selected.path);
-    } catch {
-        // no-op
+        await loadVideoFromSource(video, selected.fileUrl, playerId, selected.path, { skipMetadataProbe: true });
+        const selectedAudioTrack = prepareAudioTracks(playerId, selected, selected.path);
+        configureAudioTrack(playerId, selectedAudioTrack, selected.path);
+        const selectedVobSubTrack = prepareVobSubTracks(playerId, selected, selected.path);
+        configureVobSubTrack(playerId, selectedVobSubTrack, selected.path);
+        if (selectedVobSubTrack) {
+            await clearSubtitlesForPlayer(getPlayerNumFromPlayerId(playerId));
+        } else {
+            await autoLoadSubtitleForVideo(playerId, selected.path);
+        }
+    } catch (error) {
+        console.error('Could not open video:', error);
     }
+}
+
+function getAvailableVobSubTracks(playerNum) {
+    return playerNum === 1 ? vobSubTracks1 : vobSubTracks2;
+}
+
+function formatVobSubLanguage(language) {
+    const code = String(language || '').trim().toLowerCase();
+    const names = {
+        eng: 'English', en: 'English', jpn: 'Japanese', ja: 'Japanese',
+        spa: 'Spanish', es: 'Spanish', fra: 'French', fre: 'French', fr: 'French',
+        deu: 'German', ger: 'German', de: 'German', ita: 'Italian', it: 'Italian',
+        por: 'Portuguese', pt: 'Portuguese', und: 'Unknown language'
+    };
+    return names[code] || (code ? code.toUpperCase() : 'Unknown language');
+}
+
+function getAvailableAudioTracks(playerNum) {
+    return playerNum === 1 ? audioTracks1 : audioTracks2;
+}
+
+function getDynamicAudioPlayer(playerNum) {
+    return playerNum === 1 ? dynamicAudioPlayer1 : dynamicAudioPlayer2;
+}
+
+function formatAudioCodec(track) {
+    const codec = String(track?.codec || '').trim().toLowerCase();
+    const profile = String(track?.profile || '').trim();
+    if (profile && profile.toLowerCase() !== 'unknown') return profile;
+    const names = {
+        ac3: 'AC-3', eac3: 'E-AC-3', dts: 'DTS', dca: 'DTS',
+        truehd: 'TrueHD', aac: 'AAC', opus: 'Opus', flac: 'FLAC',
+        mp3: 'MP3', vorbis: 'Vorbis'
+    };
+    return names[codec] || codec.toUpperCase() || 'Audio';
+}
+
+function formatAudioTrackLabel(track, index) {
+    const language = formatVobSubLanguage(track.language);
+    const title = String(track.title || '').trim();
+    const codec = formatAudioCodec(track);
+    const channels = Number.isInteger(Number(track.channels)) ? `${Number(track.channels)} ch` : '';
+    const flags = track.default ? ['default'] : [];
+    const name = title && title.toLowerCase() !== language.toLowerCase()
+        ? `${language} — ${title}`
+        : (title || language);
+    const technical = [codec, channels].filter(Boolean).join(', ');
+    return `${index + 1}. ${name}${technical ? ` · ${technical}` : ''}${flags.length ? ` (${flags.join(', ')})` : ''}`;
+}
+
+function setAudioLoadStatus(playerNum, state, message) {
+    const status = document.getElementById(`audioTrackStatus${playerNum}`);
+    const indicator = document.getElementById(`audioIndicator${playerNum}`);
+    const indicatorText = document.getElementById(`audioIndicatorText${playerNum}`);
+    if (status) {
+        status.dataset.state = state || '';
+        status.textContent = message || '';
+    }
+    if (!indicator) return;
+    indicator.dataset.state = state || '';
+    if (indicatorText) indicatorText.textContent = message || '';
+    indicator.hidden = state !== 'loading' && state !== 'error';
+}
+
+function setAvailableAudioTracks(playerNum, tracks, selectedTrack) {
+    const seen = new Set();
+    const normalized = (Array.isArray(tracks) ? tracks : [])
+        .filter((track) => track && Number.isInteger(Number(track.streamIndex)))
+        .map((track) => ({ ...track, streamIndex: Number(track.streamIndex) }))
+        .filter((track) => {
+            if (seen.has(track.streamIndex)) return false;
+            seen.add(track.streamIndex);
+            return true;
+        });
+    if (playerNum === 1) {
+        audioTracks1 = normalized;
+    } else {
+        audioTracks2 = normalized;
+    }
+
+    const row = document.getElementById(`audioTrackRow${playerNum}`);
+    const select = document.getElementById(`audioTrackSelect${playerNum}`);
+    if (row) row.hidden = normalized.length === 0;
+    if (!select) return;
+    select.replaceChildren();
+    const original = document.createElement('option');
+    original.value = '';
+    original.textContent = 'Original/default audio';
+    select.appendChild(original);
+    normalized.forEach((track, index) => {
+        const option = document.createElement('option');
+        option.value = String(track.streamIndex);
+        option.textContent = formatAudioTrackLabel(track, index);
+        select.appendChild(option);
+    });
+    select.value = selectedTrack ? String(selectedTrack.streamIndex) : '';
+    if (normalized.length === 0) setAudioLoadStatus(playerNum, '', '');
+}
+
+function getStoredAudioChoice(playerNum, filePath, tracks) {
+    const key = playerNum === 1 ? LS_KEYS.audioChoice1 : LS_KEYS.audioChoice2;
+    try {
+        const stored = JSON.parse(lsGet(key) || 'null');
+        const choices = Array.isArray(stored) ? stored : (stored?.filePath ? [stored] : []);
+        const choice = choices.find((candidate) => candidate?.filePath === filePath && Object.prototype.hasOwnProperty.call(candidate, 'streamIndex'));
+        if (!choice) return { found: false, track: null };
+        if (choice.streamIndex === null) return { found: true, track: null };
+        const match = tracks.find((track) => Number(track.streamIndex) === Number(choice.streamIndex));
+        return match ? { found: true, track: match } : { found: false, track: null };
+    } catch {
+        return { found: false, track: null };
+    }
+}
+
+function persistAudioChoice(playerNum, filePath, track) {
+    if (!filePath) return;
+    const key = playerNum === 1 ? LS_KEYS.audioChoice1 : LS_KEYS.audioChoice2;
+    let choices = [];
+    try {
+        const stored = JSON.parse(lsGet(key) || 'null');
+        choices = Array.isArray(stored) ? stored : (stored?.filePath ? [stored] : []);
+    } catch { }
+    choices = [
+        { filePath, streamIndex: track ? Number(track.streamIndex) : null },
+        ...choices.filter((candidate) => candidate?.filePath !== filePath)
+    ].slice(0, 50);
+    lsSet(key, JSON.stringify(choices));
+}
+
+function prepareAudioTracks(playerId, metadata, filePath) {
+    const playerNum = getPlayerNumFromPlayerId(playerId);
+    const tracks = Array.isArray(metadata?.audioTracks) ? metadata.audioTracks : [];
+    const stored = getStoredAudioChoice(playerNum, filePath, tracks);
+    const selected = stored.found ? stored.track : (metadata?.selectedAudioTrack || null);
+    setAvailableAudioTracks(playerNum, tracks, selected);
+    return selected;
+}
+
+function setAudioTrack(playerNum, track) {
+    const next = track && Number.isInteger(Number(track.streamIndex))
+        ? { ...track, streamIndex: Number(track.streamIndex) }
+        : null;
+    if (playerNum === 1) {
+        audioTrack1 = next;
+    } else {
+        audioTrack2 = next;
+    }
+    const select = document.getElementById(`audioTrackSelect${playerNum}`);
+    if (select) select.value = next ? String(next.streamIndex) : '';
+    return next;
+}
+
+function configureAudioTrack(playerId, track, filePath) {
+    const playerNum = getPlayerNumFromPlayerId(playerId);
+    const next = setAudioTrack(playerNum, track);
+    if (playerNum === 2 && isMainWindow() && isElectronWindowMode()) {
+        getDynamicAudioPlayer(2)?.setTrack(null, null).catch(() => { });
+        mergeRemotePlayer2State({ audioTrack: next, audioTracks: [...audioTracks2] });
+        sendHydrateToPlayer2Window();
+        return;
+    }
+    const player = getDynamicAudioPlayer(playerNum);
+    if (!player) {
+        if (next) setAudioLoadStatus(playerNum, 'error', 'Audio converter unavailable');
+        return;
+    }
+    player.setTrack(next, filePath).catch((error) => {
+        console.error('Could not configure converted audio:', error);
+        setAudioLoadStatus(playerNum, 'error', 'Could not load the selected audio track');
+    });
+}
+
+async function selectAudioTrackForPlayer(playerNum, streamIndex) {
+    const tracks = getAvailableAudioTracks(playerNum);
+    const track = streamIndex === null || streamIndex === ''
+        ? null
+        : tracks.find((candidate) => Number(candidate.streamIndex) === Number(streamIndex)) || null;
+    const filePath = playerNum === 1 ? lastVideoPath1 : lastVideoPath2;
+    persistAudioChoice(playerNum, filePath, track);
+    configureAudioTrack(playerNum === 1 ? VIDEO_PLAYER_IDS.video1 : VIDEO_PLAYER_IDS.video2, track, filePath);
+    maybeBroadcastPlayer2State('audio-track');
+    return track;
+}
+
+function setupAudioTrackSelector(playerNum) {
+    const select = document.getElementById(`audioTrackSelect${playerNum}`);
+    if (!select) return;
+    select.addEventListener('change', () => {
+        selectAudioTrackForPlayer(playerNum, select.value).catch((error) => {
+            console.error('Could not switch audio track:', error);
+            setAudioLoadStatus(playerNum, 'error', 'Could not switch embedded audio track');
+        });
+    });
+}
+
+function ensureDynamicAudioPlayers() {
+    if (!electronAPI || typeof window.DynamicAudioPlayer !== 'function') return;
+    if (!dynamicAudioPlayer1) {
+        dynamicAudioPlayer1 = new window.DynamicAudioPlayer({
+            video: video1,
+            electronAPI,
+            onStatus: (state, message) => setAudioLoadStatus(1, state, message)
+        });
+    }
+    if (!dynamicAudioPlayer2) {
+        dynamicAudioPlayer2 = new window.DynamicAudioPlayer({
+            video: video2,
+            electronAPI,
+            onStatus: (state, message) => setAudioLoadStatus(2, state, message)
+        });
+    }
+}
+
+function setPlayerVolume(playerNum, value) {
+    const video = playerNum === 1 ? video1 : video2;
+    const player = getDynamicAudioPlayer(playerNum);
+    if (player) {
+        player.setVolume(value);
+    } else {
+        video.volume = value;
+    }
+}
+
+function getPlayerMuted(playerNum) {
+    const player = getDynamicAudioPlayer(playerNum);
+    const video = playerNum === 1 ? video1 : video2;
+    return player ? player.getMuted() : !!video.muted;
+}
+
+function setPlayerMuted(playerNum, muted) {
+    const player = getDynamicAudioPlayer(playerNum);
+    const video = playerNum === 1 ? video1 : video2;
+    if (player) {
+        player.setMuted(muted);
+    } else {
+        video.muted = !!muted;
+    }
+}
+
+function formatVobSubTrackLabel(track, index) {
+    const language = formatVobSubLanguage(track.language);
+    const title = String(track.title || '').trim();
+    const flags = [track.forced ? 'forced' : '', track.default ? 'default' : ''].filter(Boolean);
+    const details = title && title.toLowerCase() !== language.toLowerCase() ? `${language} — ${title}` : (title || language);
+    return `${index + 1}. ${details}${flags.length ? ` (${flags.join(', ')})` : ''}`;
+}
+
+function setVobSubLoadStatus(playerNum, state, message) {
+    const status = document.getElementById(`vobSubTrackStatus${playerNum}`);
+    const indicator = document.getElementById(`vobSubIndicator${playerNum}`);
+    const indicatorText = document.getElementById(`vobSubIndicatorText${playerNum}`);
+    if (status) {
+        status.dataset.state = state || '';
+        status.textContent = message || '';
+    }
+    if (!indicator) return;
+    indicator.dataset.state = state || '';
+    if (indicatorText) indicatorText.textContent = message || '';
+    indicator.hidden = state !== 'loading' && state !== 'error';
+}
+
+function setAvailableVobSubTracks(playerNum, tracks, selectedTrack) {
+    const normalized = (Array.isArray(tracks) ? tracks : [])
+        .filter((track) => track && Number.isInteger(Number(track.streamIndex)))
+        .map((track) => ({ ...track, streamIndex: Number(track.streamIndex) }));
+    if (playerNum === 1) {
+        vobSubTracks1 = normalized;
+    } else {
+        vobSubTracks2 = normalized;
+    }
+
+    const row = document.getElementById(`vobSubTrackRow${playerNum}`);
+    const select = document.getElementById(`vobSubTrackSelect${playerNum}`);
+    if (row) row.hidden = normalized.length === 0;
+    if (!select) return;
+    select.replaceChildren();
+    const off = document.createElement('option');
+    off.value = '';
+    off.textContent = 'Off';
+    select.appendChild(off);
+    normalized.forEach((track, index) => {
+        const option = document.createElement('option');
+        option.value = String(track.streamIndex);
+        option.textContent = formatVobSubTrackLabel(track, index);
+        select.appendChild(option);
+    });
+    select.value = selectedTrack ? String(selectedTrack.streamIndex) : '';
+    if (normalized.length === 0) setVobSubLoadStatus(playerNum, '', '');
+}
+
+function getStoredVobSubChoice(playerNum, filePath, tracks) {
+    const key = playerNum === 1 ? LS_KEYS.vobSubChoice1 : LS_KEYS.vobSubChoice2;
+    try {
+        const stored = JSON.parse(lsGet(key) || 'null');
+        const choices = Array.isArray(stored) ? stored : (stored?.filePath ? [stored] : []);
+        const choice = choices.find((candidate) => candidate?.filePath === filePath && Object.prototype.hasOwnProperty.call(candidate, 'streamIndex'));
+        if (!choice) return { found: false, track: null };
+        if (choice.streamIndex === null) return { found: true, track: null };
+        const match = tracks.find((track) => Number(track.streamIndex) === Number(choice.streamIndex));
+        return match ? { found: true, track: match } : { found: false, track: null };
+    } catch {
+        return { found: false, track: null };
+    }
+}
+
+function persistVobSubChoice(playerNum, filePath, track) {
+    if (!filePath) return;
+    const key = playerNum === 1 ? LS_KEYS.vobSubChoice1 : LS_KEYS.vobSubChoice2;
+    let choices = [];
+    try {
+        const stored = JSON.parse(lsGet(key) || 'null');
+        choices = Array.isArray(stored) ? stored : (stored?.filePath ? [stored] : []);
+    } catch { }
+    choices = [
+        { filePath, streamIndex: track ? Number(track.streamIndex) : null },
+        ...choices.filter((candidate) => candidate?.filePath !== filePath)
+    ].slice(0, 50);
+    lsSet(key, JSON.stringify(choices));
+}
+
+function prepareVobSubTracks(playerId, metadata, filePath) {
+    const playerNum = getPlayerNumFromPlayerId(playerId);
+    const tracks = Array.isArray(metadata?.vobSubTracks) ? metadata.vobSubTracks : [];
+    const stored = getStoredVobSubChoice(playerNum, filePath, tracks);
+    const selected = stored.found ? stored.track : (metadata?.selectedVobSubTrack || null);
+    setAvailableVobSubTracks(playerNum, tracks, selected);
+    return selected;
+}
+
+async function selectVobSubTrackForPlayer(playerNum, streamIndex) {
+    const tracks = getAvailableVobSubTracks(playerNum);
+    const track = streamIndex === null || streamIndex === ''
+        ? null
+        : tracks.find((candidate) => Number(candidate.streamIndex) === Number(streamIndex)) || null;
+    const filePath = playerNum === 1 ? lastVideoPath1 : lastVideoPath2;
+    persistVobSubChoice(playerNum, filePath, track);
+    configureVobSubTrack(playerNum === 1 ? VIDEO_PLAYER_IDS.video1 : VIDEO_PLAYER_IDS.video2, track, filePath);
+    if (track) await clearSubtitlesForPlayer(playerNum);
+    maybeBroadcastPlayer2State('vobsub-track');
+    return track;
+}
+
+function setupVobSubTrackSelector(playerNum) {
+    const select = document.getElementById(`vobSubTrackSelect${playerNum}`);
+    if (!select) return;
+    select.addEventListener('change', () => {
+        selectVobSubTrackForPlayer(playerNum, select.value).catch((error) => {
+            console.error('Could not switch VobSub track:', error);
+            setVobSubLoadStatus(playerNum, 'error', 'Could not switch embedded subtitle track');
+        });
+    });
+}
+
+function getVobSubRenderer(playerNum) {
+    return playerNum === 1 ? vobSubRenderer1 : vobSubRenderer2;
+}
+
+function setVobSubRenderer(playerNum, renderer) {
+    if (playerNum === 1) {
+        vobSubRenderer1 = renderer;
+    } else {
+        vobSubRenderer2 = renderer;
+    }
+}
+
+function disposeVobSubRenderer(playerNum) {
+    if (playerNum === 1) {
+        vobSubLoadGeneration1 += 1;
+    } else {
+        vobSubLoadGeneration2 += 1;
+    }
+    const renderer = getVobSubRenderer(playerNum);
+    if (renderer && typeof renderer.dispose === 'function') {
+        try { renderer.dispose(); } catch { }
+    }
+    setVobSubRenderer(playerNum, null);
+}
+
+function getVobSubTrack(playerNum) {
+    return playerNum === 1 ? vobSubTrack1 : vobSubTrack2;
+}
+
+function setVobSubTrack(playerNum, track) {
+    const next = track && Number.isInteger(Number(track.streamIndex)) ? { ...track, streamIndex: Number(track.streamIndex) } : null;
+    if (playerNum === 1) {
+        vobSubTrack1 = next;
+    } else {
+        vobSubTrack2 = next;
+    }
+    const select = document.getElementById(`vobSubTrackSelect${playerNum}`);
+    if (select) select.value = next ? String(next.streamIndex) : '';
+    return next;
+}
+
+function getVobSubModule() {
+    if (window.bitmapSubtitleAPI) return Promise.resolve(window.bitmapSubtitleAPI);
+    return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('The bitmap subtitle renderer did not load.')), 10000);
+        window.addEventListener('bitmap-subtitles-ready', () => {
+            clearTimeout(timeout);
+            resolve(window.bitmapSubtitleAPI);
+        }, { once: true });
+    });
+}
+
+function toArrayBuffer(value) {
+    if (value instanceof ArrayBuffer) return value;
+    if (ArrayBuffer.isView(value)) {
+        return value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+    }
+    return null;
+}
+
+function syncVobSubRendererTransform(playerNum) {
+    const renderer = getVobSubRenderer(playerNum);
+    const video = playerNum === 1 ? video1 : video2;
+    const canvas = renderer?.canvas;
+    if (!canvas || !video) return;
+    canvas.classList.add('bitmap-subtitle-canvas');
+}
+
+function applyVobSubDisplaySettings(playerNum) {
+    const renderer = getVobSubRenderer(playerNum);
+    if (!renderer || typeof renderer.setDisplaySettings !== 'function') return;
+    const enabled = playerNum === 1 ? subtitlesEnabled1 : subtitlesEnabled2;
+    const scale = playerNum === 1 ? subtitleFontScale1 : subtitleFontScale2;
+    renderer.setDisplaySettings({
+        scale: Math.max(0.1, Math.min(3, scale)),
+        opacity: enabled ? 1 : 0
+    });
+}
+
+async function loadVobSubRenderer(playerNum, track, filePath) {
+    disposeVobSubRenderer(playerNum);
+    const generation = playerNum === 1 ? vobSubLoadGeneration1 : vobSubLoadGeneration2;
+    if (!electronAPI || !track || !filePath || typeof electronAPI.loadVobSubTrack !== 'function') {
+        setVobSubLoadStatus(playerNum, track ? 'error' : 'off', track ? 'Embedded subtitle loader unavailable' : 'Embedded subtitles off');
+        return;
+    }
+
+    const expectedStreamIndex = Number(track.streamIndex);
+    const expectedPath = filePath;
+    const trackIndex = getAvailableVobSubTracks(playerNum).findIndex((candidate) => candidate.streamIndex === expectedStreamIndex);
+    const trackLabel = formatVobSubTrackLabel(track, Math.max(0, trackIndex));
+    setVobSubLoadStatus(playerNum, 'loading', `Loading ${trackLabel}…`);
+    try {
+        const [moduleApi, payload] = await Promise.all([
+            getVobSubModule(),
+            electronAPI.loadVobSubTrack(filePath, expectedStreamIndex)
+        ]);
+        await moduleApi.ready;
+        const currentGeneration = playerNum === 1 ? vobSubLoadGeneration1 : vobSubLoadGeneration2;
+        const currentPath = playerNum === 1 ? lastVideoPath1 : lastVideoPath2;
+        const currentTrack = getVobSubTrack(playerNum);
+        if (currentGeneration !== generation || currentPath !== expectedPath || Number(currentTrack?.streamIndex) !== expectedStreamIndex) return;
+
+        const subContent = toArrayBuffer(payload?.content);
+        if (!subContent) throw new Error('The extracted VobSub track was empty.');
+        const videoElement = playerNum === 1 ? video1 : video2;
+        const renderer = moduleApi.createRenderer({
+            video: videoElement,
+            subContent,
+            fileName: payload.fileName || 'track.mks',
+            cacheLimit: 48,
+            prefetchWindow: { before: 1, after: 2 },
+            displaySettings: {
+                scale: Math.max(0.1, Math.min(3, playerNum === 1 ? subtitleFontScale1 : subtitleFontScale2)),
+                opacity: (playerNum === 1 ? subtitlesEnabled1 : subtitlesEnabled2) ? 1 : 0
+            },
+            onEvent: (event) => {
+                const activeGeneration = playerNum === 1 ? vobSubLoadGeneration1 : vobSubLoadGeneration2;
+                if (activeGeneration !== generation) return;
+                if (event.type === 'loaded') {
+                    syncVobSubRendererTransform(playerNum);
+                    const language = track.language && track.language !== 'und' ? ` (${track.language})` : '';
+                    setVobSubLoadStatus(playerNum, 'ready', `Ready: ${trackLabel}`);
+                    showControlNotification(`VobSub${language} ready`);
+                } else if (event.type === 'error') {
+                    console.error('VobSub renderer error:', event.error);
+                    setVobSubLoadStatus(playerNum, 'error', `Could not load ${trackLabel}`);
+                }
+            }
+        });
+        setVobSubRenderer(playerNum, renderer);
+    } catch (error) {
+        const activeGeneration = playerNum === 1 ? vobSubLoadGeneration1 : vobSubLoadGeneration2;
+        if (activeGeneration !== generation) return;
+        console.error('Could not load embedded VobSub:', error);
+        setVobSubLoadStatus(playerNum, 'error', `Could not load ${trackLabel}`);
+        showControlNotification(`Could not load VobSub ${playerNum}`);
+    }
+}
+
+function configureVobSubTrack(playerId, track, filePath) {
+    const playerNum = getPlayerNumFromPlayerId(playerId);
+    const previous = getVobSubTrack(playerNum);
+    const next = setVobSubTrack(playerNum, track);
+    if (playerNum === 2 && isMainWindow() && isElectronWindowMode()) {
+        disposeVobSubRenderer(2);
+        mergeRemotePlayer2State({ vobSubTrack: next, vobSubTracks: [...vobSubTracks2] });
+        sendHydrateToPlayer2Window();
+        return;
+    }
+    if (getVobSubRenderer(playerNum)
+        && Number(previous?.streamIndex) === Number(next?.streamIndex)
+        && (playerNum === 1 ? lastVideoPath1 : lastVideoPath2) === filePath) {
+        applyVobSubDisplaySettings(playerNum);
+        return;
+    }
+    loadVobSubRenderer(playerNum, next, filePath);
 }
 
 async function restoreLastPlayedVideos() {
@@ -2169,25 +2750,47 @@ async function restoreLastPlayedVideos() {
         ]);
 
         if (last1 && last1.fileUrl && isMainWindow()) {
-            await loadVideoFromSource(video1, last1.fileUrl, VIDEO_PLAYER_IDS.video1, last1.path, { persist: false, clearSubtitles: false });
-            await autoLoadSubtitleForVideo(VIDEO_PLAYER_IDS.video1, last1.path, { persist: false, skipIfExisting: true });
+            applyVideoMetadata(VIDEO_PLAYER_IDS.video1, last1);
+            await loadVideoFromSource(video1, last1.fileUrl, VIDEO_PLAYER_IDS.video1, last1.path, { persist: false, clearSubtitles: false, skipMetadataProbe: true });
+            const selectedAudioTrack = prepareAudioTracks(VIDEO_PLAYER_IDS.video1, last1, last1.path);
+            configureAudioTrack(VIDEO_PLAYER_IDS.video1, selectedAudioTrack, last1.path);
+            const selectedVobSubTrack = prepareVobSubTracks(VIDEO_PLAYER_IDS.video1, last1, last1.path);
+            configureVobSubTrack(VIDEO_PLAYER_IDS.video1, selectedVobSubTrack, last1.path);
+            if (!selectedVobSubTrack) {
+                await autoLoadSubtitleForVideo(VIDEO_PLAYER_IDS.video1, last1.path, { persist: false, skipIfExisting: true });
+            }
         }
         if (last2 && last2.fileUrl) {
+            applyVideoMetadata(VIDEO_PLAYER_IDS.video2, last2);
+            const selectedAudioTrack = prepareAudioTracks(VIDEO_PLAYER_IDS.video2, last2, last2.path);
+            setAudioTrack(2, selectedAudioTrack);
+            const selectedVobSubTrack = prepareVobSubTracks(VIDEO_PLAYER_IDS.video2, last2, last2.path);
+            setVobSubTrack(2, selectedVobSubTrack);
             if (isElectronWindowMode()) {
                 remotePlayer2State = mergeRemotePlayer2State({
                     src: last2.fileUrl,
                     filePath: last2.path,
                     playbackRate: globalPlaybackRate,
-                    paused: true
+                    paused: true,
+                    audioTrack: selectedAudioTrack,
+                    audioTracks: [...audioTracks2],
+                    vobSubTrack: selectedVobSubTrack,
+                    vobSubTracks: [...vobSubTracks2]
                 });
-                await autoLoadSubtitleForVideo(VIDEO_PLAYER_IDS.video2, last2.path, { persist: false, skipIfExisting: true });
+                if (!selectedVobSubTrack) {
+                    await autoLoadSubtitleForVideo(VIDEO_PLAYER_IDS.video2, last2.path, { persist: false, skipIfExisting: true });
+                }
                 pendingPlayer2Hydration = true;
                 if (player2WindowOpen) sendHydrateToPlayer2Window();
                 schedulePersistElectronPlaybackSession();
                 return;
             }
-            await loadVideoFromSource(video2, last2.fileUrl, VIDEO_PLAYER_IDS.video2, last2.path, { persist: false, clearSubtitles: false });
-            await autoLoadSubtitleForVideo(VIDEO_PLAYER_IDS.video2, last2.path, { persist: false, skipIfExisting: true });
+            await loadVideoFromSource(video2, last2.fileUrl, VIDEO_PLAYER_IDS.video2, last2.path, { persist: false, clearSubtitles: false, skipMetadataProbe: true });
+            configureAudioTrack(VIDEO_PLAYER_IDS.video2, selectedAudioTrack, last2.path);
+            configureVobSubTrack(VIDEO_PLAYER_IDS.video2, selectedVobSubTrack, last2.path);
+            if (!selectedVobSubTrack) {
+                await autoLoadSubtitleForVideo(VIDEO_PLAYER_IDS.video2, last2.path, { persist: false, skipIfExisting: true });
+            }
         }
     } catch {
         // no-op: app still works without restoring prior files
@@ -2272,14 +2875,16 @@ function applyVideoMetadata(playerId, metadata, options = {}) {
 async function ensureFrameRateForVideo(playerId, localPath, options = {}) {
     if (!localPath || !electronAPI || typeof electronAPI.probeVideoMetadata !== 'function') {
         applyVideoMetadata(playerId, null, { notifyOnFailure: !!localPath && options.notifyOnProbeFailure });
-        return;
+        return null;
     }
 
     try {
         const metadata = await electronAPI.probeVideoMetadata(localPath);
         applyVideoMetadata(playerId, metadata, { notifyOnFailure: options.notifyOnProbeFailure });
+        return metadata;
     } catch {
         applyVideoMetadata(playerId, null, { notifyOnFailure: options.notifyOnProbeFailure });
+        return null;
     }
 }
 
@@ -2291,11 +2896,11 @@ async function restoreLastPlayedSubtitles() {
             electronAPI.getLastSubtitle(VIDEO_PLAYER_IDS.video2)
         ]);
 
-        if (last1 && typeof last1.content === 'string' && isMainWindow()) {
+        if (last1 && typeof last1.content === 'string' && isMainWindow() && !vobSubTrack1) {
             await applySubtitleContent(1, last1.content, last1.path, { persist: false });
         }
 
-        if (last2 && typeof last2.content === 'string') {
+        if (last2 && typeof last2.content === 'string' && !vobSubTrack2) {
             await applySubtitleContent(2, last2.content, last2.path, { persist: false });
         }
     } catch {
@@ -2306,7 +2911,9 @@ async function restoreLastPlayedSubtitles() {
 async function loadVideoFromSource(video, src, playerId, localPath, options) {
     if (!video || !src) return;
     const opts = options || {};
-    await ensureFrameRateForVideo(playerId, localPath, opts);
+    if (!opts.skipMetadataProbe) {
+        await ensureFrameRateForVideo(playerId, localPath, opts);
+    }
     if (opts.clearSubtitles !== false) {
         await clearSubtitlesForPlayer(getPlayerNumFromPlayerId(playerId), {
             persist: opts.persist !== false
@@ -2344,11 +2951,19 @@ async function loadVideoFromSource(video, src, playerId, localPath, options) {
     schedulePersistElectronPlaybackSession();
 }
 
-function loadVideo(event, video, playerId) {
+async function loadVideo(event, video, playerId) {
     const file = event.target.files[0];
     if (file) {
         const url = URL.createObjectURL(file);
-        loadVideoFromSource(video, url, playerId, file.path || null, { notifyOnProbeFailure: true });
+        const filePath = file.path || null;
+        const metadata = await ensureFrameRateForVideo(playerId, filePath, { notifyOnProbeFailure: true });
+        await loadVideoFromSource(video, url, playerId, filePath, { skipMetadataProbe: true });
+        if (filePath) {
+            const selectedAudioTrack = prepareAudioTracks(playerId, metadata || {}, filePath);
+            configureAudioTrack(playerId, selectedAudioTrack, filePath);
+            const selectedVobSubTrack = prepareVobSubTracks(playerId, metadata || {}, filePath);
+            configureVobSubTrack(playerId, selectedVobSubTrack, filePath);
+        }
     }
 }
 
@@ -2817,6 +3432,7 @@ function setSubtitlesEnabled(playerNum, enabled, options = {}) {
             display.style.display = 'none';
         }
     }
+    applyVobSubDisplaySettings(playerNum);
 
     if (options.notify) {
         showControlNotification(`Subtitles ${playerNum} ${nextEnabled ? 'On' : 'Off'}`);
@@ -2906,12 +3522,16 @@ function swapVideos() {
             duration: video1.duration || 0,
             paused: !!video1.paused,
             volume: Number.isFinite(video1.volume) ? video1.volume : 1,
-            muted: !!video1.muted,
+            muted: getPlayerMuted(1),
             playbackRate: Number.isFinite(video1.playbackRate) ? video1.playbackRate : globalPlaybackRate,
             subtitles: Array.isArray(subtitles1) ? [...subtitles1] : [],
             subtitlePath: lastSubtitlePath1 || null,
             subtitlesEnabled: subtitlesEnabled1 !== false,
             subtitleFontScale: subtitleFontScale1,
+            vobSubTrack: vobSubTrack1,
+            vobSubTracks: [...vobSubTracks1],
+            audioTrack: audioTrack1,
+            audioTracks: [...audioTracks1],
             tf: cloneTf(tf1)
         };
         const player2State = buildPlayer2Snapshot();
@@ -2925,6 +3545,20 @@ function swapVideos() {
         lastSubtitlePath2 = player1State.subtitlePath || null;
         subtitlesEnabled1 = player2State.subtitlesEnabled !== false;
         subtitlesEnabled2 = player1State.subtitlesEnabled !== false;
+        vobSubTrack1 = player2State.vobSubTrack || null;
+        vobSubTrack2 = player1State.vobSubTrack || null;
+        vobSubTracks1 = Array.isArray(player2State.vobSubTracks) ? [...player2State.vobSubTracks] : [];
+        vobSubTracks2 = [...player1State.vobSubTracks];
+        audioTrack1 = player2State.audioTrack || null;
+        audioTrack2 = player1State.audioTrack || null;
+        audioTracks1 = Array.isArray(player2State.audioTracks) ? [...player2State.audioTracks] : [];
+        audioTracks2 = [...player1State.audioTracks];
+        setAvailableVobSubTracks(1, vobSubTracks1, vobSubTrack1);
+        setAvailableVobSubTracks(2, vobSubTracks2, vobSubTrack2);
+        setAvailableAudioTracks(1, audioTracks1, audioTrack1);
+        setAvailableAudioTracks(2, audioTracks2, audioTrack2);
+        disposeVobSubRenderer(1);
+        disposeVobSubRenderer(2);
         setSubtitleFontScale(1, player2State.subtitleFontScale, { notify: false, broadcast: false });
         setSubtitleFontScale(2, player1State.subtitleFontScale, { notify: false, broadcast: false });
         tf1 = isValidTf(player2State.tf) ? cloneTf(player2State.tf) : cloneTf(tf1);
@@ -2942,6 +3576,8 @@ function swapVideos() {
         const restoreMain = async () => {
             if (player2State.src) {
                 await loadVideoFromSource(video1, player2State.src, VIDEO_PLAYER_IDS.video1, player2State.filePath, { persist: false, clearSubtitles: false });
+                configureAudioTrack(VIDEO_PLAYER_IDS.video1, player2State.audioTrack, player2State.filePath);
+                configureVobSubTrack(VIDEO_PLAYER_IDS.video1, player2State.vobSubTrack, player2State.filePath);
             } else {
                 try { video1.pause(); } catch { }
                 video1.removeAttribute('src');
@@ -2950,8 +3586,8 @@ function swapVideos() {
             if (player2State.src) {
                 const once = () => {
                     try { video1.currentTime = player2State.currentTime || 0; } catch { }
-                    video1.volume = Number.isFinite(player2State.volume) ? player2State.volume : 1;
-                    video1.muted = !!player2State.muted;
+                    setPlayerVolume(1, Number.isFinite(player2State.volume) ? player2State.volume : 1);
+                    setPlayerMuted(1, !!player2State.muted);
                     try { video1.playbackRate = Number.isFinite(player2State.playbackRate) ? player2State.playbackRate : globalPlaybackRate; } catch { }
                     if (player2State.paused === false) {
                         video1.play().catch(() => { });
@@ -2990,8 +3626,8 @@ function swapVideos() {
     const video2CurrentTime = video2.currentTime;
     const video1Volume = video1.volume;
     const video2Volume = video2.volume;
-    const video1Muted = video1.muted;
-    const video2Muted = video2.muted;
+    const video1Muted = getPlayerMuted(1);
+    const video2Muted = getPlayerMuted(2);
     const video1PlaybackRate = video1.playbackRate;
     const video2PlaybackRate = video2.playbackRate;
     const video1Paused = video1.paused;
@@ -3006,6 +3642,14 @@ function swapVideos() {
     const tempSubtitlesEnabled2 = subtitlesEnabled2;
     const tempSubtitleFontScale1 = subtitleFontScale1;
     const tempSubtitleFontScale2 = subtitleFontScale2;
+    const tempVobSubTrack1 = vobSubTrack1;
+    const tempVobSubTrack2 = vobSubTrack2;
+    const tempVobSubTracks1 = [...vobSubTracks1];
+    const tempVobSubTracks2 = [...vobSubTracks2];
+    const tempAudioTrack1 = audioTrack1;
+    const tempAudioTrack2 = audioTrack2;
+    const tempAudioTracks1 = [...audioTracks1];
+    const tempAudioTracks2 = [...audioTracks2];
 
     // Store sync points if they exist
     const tempSyncPoint1 = syncPoint1;
@@ -3021,8 +3665,22 @@ function swapVideos() {
     // Swap video sources
     video1.src = video2Src;
     video2.src = video1Src;
+    disposeVobSubRenderer(1);
+    disposeVobSubRenderer(2);
     lastVideoPath1 = tempPath2;
     lastVideoPath2 = tempPath1;
+    vobSubTrack1 = tempVobSubTrack2;
+    vobSubTrack2 = tempVobSubTrack1;
+    setAvailableVobSubTracks(1, tempVobSubTracks2, vobSubTrack1);
+    setAvailableVobSubTracks(2, tempVobSubTracks1, vobSubTrack2);
+    audioTrack1 = tempAudioTrack2;
+    audioTrack2 = tempAudioTrack1;
+    setAvailableAudioTracks(1, tempAudioTracks2, audioTrack1);
+    setAvailableAudioTracks(2, tempAudioTracks1, audioTrack2);
+    configureAudioTrack(VIDEO_PLAYER_IDS.video1, audioTrack1, lastVideoPath1);
+    configureAudioTrack(VIDEO_PLAYER_IDS.video2, audioTrack2, lastVideoPath2);
+    loadVobSubRenderer(1, vobSubTrack1, lastVideoPath1);
+    loadVobSubRenderer(2, vobSubTrack2, lastVideoPath2);
     if (electronAPI) {
         if (lastVideoPath1) electronAPI.setLastVideo(VIDEO_PLAYER_IDS.video1, lastVideoPath1).catch(() => { });
         if (lastVideoPath2) electronAPI.setLastVideo(VIDEO_PLAYER_IDS.video2, lastVideoPath2).catch(() => { });
@@ -3051,10 +3709,10 @@ function swapVideos() {
         if (video2Src) video1.currentTime = video2CurrentTime;
         if (video1Src) video2.currentTime = video1CurrentTime;
 
-        video1.volume = video2Volume;
-        video2.volume = video1Volume;
-        video1.muted = video2Muted;
-        video2.muted = video1Muted;
+        setPlayerVolume(1, video2Volume);
+        setPlayerVolume(2, video1Volume);
+        setPlayerMuted(1, video2Muted);
+        setPlayerMuted(2, video1Muted);
         video1.playbackRate = video2PlaybackRate;
         video2.playbackRate = video1PlaybackRate;
 
@@ -3120,9 +3778,10 @@ function swapVideos() {
 }
 
 function changeVolume(video, volume, muteBtnId) {
-    video.volume = volume;
+    const playerNum = getPlayerNumFromVideo(video);
+    setPlayerVolume(playerNum, volume);
     const muteBtn = document.getElementById(muteBtnId);
-    if (volume == 0) {
+    if (getPlayerMuted(playerNum) || volume == 0) {
         muteBtn.textContent = '🔇';
     } else if (volume < 0.5) {
         muteBtn.textContent = '🔉';
@@ -3133,16 +3792,17 @@ function changeVolume(video, volume, muteBtnId) {
 }
 
 function toggleMute(video, muteBtnId, sliderId) {
+    const playerNum = getPlayerNumFromVideo(video);
     const muteBtn = document.getElementById(muteBtnId);
     const slider = document.getElementById(sliderId);
 
-    if (video.muted) {
-        video.muted = false;
-        video.volume = slider.value;
+    if (getPlayerMuted(playerNum)) {
+        setPlayerMuted(playerNum, false);
+        setPlayerVolume(playerNum, slider.value);
         changeVolume(video, slider.value, muteBtnId);
         if (slider) slider.style.setProperty('--vol', (parseFloat(slider.value) * 100) + '%');
     } else {
-        video.muted = true;
+        setPlayerMuted(playerNum, true);
         muteBtn.textContent = '🔇';
     }
     if (isPlayer2Window() && video === video2) maybeBroadcastPlayer2State('mute-toggle');
@@ -4103,4 +4763,34 @@ function toggleOverlay() {
 
 // Initialize everything when page loads
 document.addEventListener('DOMContentLoaded', initializePlayers);
+if (new URLSearchParams(window.location.search).has('vobsub-smoke')) {
+    window.__dvsVobSubSmoke = {
+        getTrack: getVobSubTrack,
+        persistChoice: persistVobSubChoice,
+        prepareTracks: prepareVobSubTracks,
+        selectTrack: selectVobSubTrackForPlayer,
+        setVideoPath(playerNum, filePath) {
+            if (playerNum === 1) lastVideoPath1 = filePath;
+            if (playerNum === 2) lastVideoPath2 = filePath;
+        },
+        setStatus: setVobSubLoadStatus
+    };
+}
+if (new URLSearchParams(window.location.search).has('dynamic-audio-smoke')) {
+    window.__dvsDynamicAudioSmoke = {
+        configureTrack: configureAudioTrack,
+        getTrack(playerNum) {
+            return playerNum === 1 ? audioTrack1 : audioTrack2;
+        },
+        getPlayerState(playerNum) {
+            return getDynamicAudioPlayer(playerNum)?.getDebugState() || null;
+        },
+        prepareTracks: prepareAudioTracks,
+        selectTrack: selectAudioTrackForPlayer,
+        setVideoPath(playerNum, filePath) {
+            if (playerNum === 1) lastVideoPath1 = filePath;
+            if (playerNum === 2) lastVideoPath2 = filePath;
+        }
+    };
+}
 })();

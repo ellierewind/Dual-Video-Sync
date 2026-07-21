@@ -17,7 +17,8 @@ A local dual-video player that can run in a browser (`index.html`) or as an Elec
     -   Volume control with fine granularity for both players.
     -   Mute/Unmute toggles.
 -   **Overlay Mode**: Secondary video can be resized, moved, and overlayed on the primary video.
--   **Subtitle Support**: Load `.srt` files for both videos with basic formatting support and responsive line wrapping.
+-   **Subtitle Support**: Load `.srt` files for both videos with basic formatting support and responsive line wrapping. The Electron app dynamically renders embedded MKV VobSub (`dvd_subtitle`) tracks over the original video.
+-   **Embedded Audio Support**: The Electron app converts selected AC-3, E-AC-3, DTS, and DTS-HD tracks to a fast local PCM audio cache without transcoding the video.
 -   **Transform Controls**: (Keyboard shortcuts) Zoom, stretch, flip, and rotate videos.
 -   **Profiles**: Save/load multiple layout profiles (video transforms + overlay position/size).
 -   **Persistence**: Saves playback rate, transforms, overlay geometry, and profiles between sessions.
@@ -30,6 +31,8 @@ A local dual-video player that can run in a browser (`index.html`) or as an Elec
 -   **Popped-out Player 2 synchronization** for seeking, frame stepping, playback controls, and sync-point capture.
 -   **Paired window lifecycle** so closing either app window also closes its companion window.
 -   **Native file picker integration** for `Choose Video 1` / `Choose Video 2`.
+-   **Dynamic MKV VobSub overlays** using the MIT-licensed `libbitsub` WASM renderer. The selected subtitle stream is copied to a small cache while the untouched original MKV begins playback normally.
+-   **Cached AC-3/DTS-family audio** using the bundled FFmpeg decoder. Audio selection, pause, seeking, speed, volume, mute, swapping, and popped-out Player 2 remain tied to the original video timeline.
 -   **Last-loaded video persistence** per player across app restarts.
 -   **Windows `.exe` packaging** via the `electron/` project.
 
@@ -66,3 +69,18 @@ A local dual-video player that can run in a browser (`index.html`) or as an Elec
 -   **Build Windows installer**:
     -   `cd electron`
     -   `npm run dist:win` (outputs to `electron/dist/`)
+
+## MKV and VobSub notes
+
+-   The original video is never transcoded, remuxed, or replaced with a proxy. It is assigned directly to the native video element.
+-   Only the selected VobSub subtitle stream is copied into a small cached `.mks` file. `libbitsub` decodes its bitmap cues and synchronizes a transparent canvas with the video while it plays and seeks.
+-   Track selection defaults to English when an English VobSub stream is available. Every embedded VobSub track can be selected—or turned off—from each player's settings menu, and manual choices are remembered per player/video.
+-   A visible overlay reports subtitle extraction/loading while it runs, with persistent ready/error status in the track menu. Existing subtitle toggle and size controls also apply to the bitmap overlay.
+-   FFmpeg/ffprobe provide stream discovery and subtitle-only extraction; their packaged license and build-source notices remain alongside the binaries.
+
+## Embedded audio notes
+
+-   The original video stream remains untouched. For codecs Chromium cannot normally play, FFmpeg converts the complete selected audio track to a finite 48 kHz stereo PCM WAV file before playback. The conversion avoids a slow audio encoder and reports progress in the player UI.
+-   Playback uses the converted audio after the complete selected track is ready. The video itself is never processed and no full-video proxy is created.
+-   Each player's settings menu lists every embedded audio track plus the original/default Chromium path. AC-3, E-AC-3, DTS, DTS-HD, and TrueHD tracks use dynamic decoding by default when selected.
+-   The selected audio track is remembered per player/video. Converted WAV files are cached and reused; seeking uses the same finite file immediately and follows playback rate, volume, and mute state without restarting FFmpeg.

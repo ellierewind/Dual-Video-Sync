@@ -4,3 +4,6 @@ dist/
 /electron/dist-fontsize
 /electron/dist-latest
 /electron/dist-syncfix
+/electron/dist*/
+/electron/renderer/bitmap-subtitles.js
+/electron/renderer/libbitsub_bg.wasm

@@ -4,7 +4,11 @@
   "description": "Electron app for synchronized dual local video playback.",
   "main": "main.js",
   "scripts": {
+    "build:renderer": "node scripts/build-renderer.js",
+    "prestart": "npm run build:renderer",
     "start": "electron .",
+    "test": "node --test bitmap-subtitles.test.js dynamic-audio.test.js",
+    "predist:win": "npm run build:renderer",
     "dist:win": "electron-builder --win nsis"
   },
   "build": {
@@ -14,7 +18,14 @@
       "**/*",
       "!dist/**",
       "!dist*/**",
+      "!*.test.js",
+      "!*.smoke.js",
+      "!*smoke-user-data/**",
       "!node_modules/.cache/**"
+    ],
+    "asarUnpack": [
+      "node_modules/ffmpeg-static/**",
+      "node_modules/@derhuerst/ffprobe-static/**"
     ],
     "directories": {
       "buildResources": ".",
@@ -32,6 +43,18 @@
       {
         "from": "../app.js",
         "to": "web/app.js"
+      },
+      {
+        "from": "renderer/bitmap-subtitles.js",
+        "to": "web/electron/renderer/bitmap-subtitles.js"
+      },
+      {
+        "from": "renderer/libbitsub_bg.wasm",
+        "to": "web/electron/renderer/libbitsub_bg.wasm"
+      },
+      {
+        "from": "renderer/dynamic-audio.js",
+        "to": "web/electron/renderer/dynamic-audio.js"
       },
       {
         "from": "../icons",
@@ -54,6 +77,12 @@
   },
   "devDependencies": {
     "electron": "^40.1.0",
-    "electron-builder": "^26.7.0"
+    "electron-builder": "^26.7.0",
+    "esbuild": "0.28.1"
+  },
+  "dependencies": {
+    "@derhuerst/ffprobe-static": "5.3.0",
+    "ffmpeg-static": "5.3.0",
+    "libbitsub": "1.10.1"
   }
 }

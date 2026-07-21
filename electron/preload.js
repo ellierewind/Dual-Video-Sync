@@ -1,13 +1,20 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
-  openVideoFile: () => ipcRenderer.invoke('dialog:open-video'),
+  openVideoFile: (playerId) => ipcRenderer.invoke('dialog:open-video', playerId),
   openSubtitleFile: () => ipcRenderer.invoke('dialog:open-subtitle'),
   getLastVideo: (playerId) => ipcRenderer.invoke('prefs:get-last-video', playerId),
   setLastVideo: (playerId, filePath) => ipcRenderer.invoke('prefs:set-last-video', { playerId, filePath }),
   getLastSubtitle: (playerId) => ipcRenderer.invoke('prefs:get-last-subtitle', playerId),
   setLastSubtitle: (playerId, filePath) => ipcRenderer.invoke('prefs:set-last-subtitle', { playerId, filePath }),
   findSubtitleForVideo: (videoPath) => ipcRenderer.invoke('subtitle:find-for-video', videoPath),
+  loadVobSubTrack: (filePath, streamIndex) => ipcRenderer.invoke('subtitle:load-vobsub-track', { filePath, streamIndex }),
+  prepareDynamicAudioTrack: (filePath, streamIndex, requestId) => ipcRenderer.invoke('audio:prepare-track', { filePath, streamIndex, requestId }),
+  onDynamicAudioProgress: (callback) => {
+    const wrapped = (_event, payload) => callback(payload);
+    ipcRenderer.on('audio:conversion-progress', wrapped);
+    return () => ipcRenderer.removeListener('audio:conversion-progress', wrapped);
+  },
   probeVideoMetadata: (videoPath) => ipcRenderer.invoke('video:probe-metadata', videoPath),
   getPlaybackSession: () => ipcRenderer.invoke('prefs:get-playback-session'),
   setPlaybackSession: (session) => ipcRenderer.invoke('prefs:set-playback-session', session),

@@ -11,9 +11,19 @@
     <!-- Main Video Player -->
     <div class="main-player-container">
         <div class="video-player" id="mainPlayer">
-            <video class="video-element" id="video1">
-                <source src="" type="video/mp4">
-            </video>
+            <div class="video-media-layer" id="videoMediaLayer1">
+                <video class="video-element" id="video1">
+                    <source src="" type="video/mp4">
+                </video>
+            </div>
+            <div class="vobsub-load-indicator" id="vobSubIndicator1" role="status" aria-live="polite" hidden>
+                <span class="vobsub-spinner" aria-hidden="true"></span>
+                <span id="vobSubIndicatorText1">Loading embedded subtitles…</span>
+            </div>
+            <div class="vobsub-load-indicator audio-load-indicator" id="audioIndicator1" role="status" aria-live="polite" hidden>
+                <span class="vobsub-spinner" aria-hidden="true"></span>
+                <span id="audioIndicatorText1">Loading embedded audio…</span>
+            </div>
             <div class="subtitle-display" id="subtitle1Display"></div>
             <div class="controls">
                 <div class="progress-container" id="progress1">
@@ -44,12 +54,22 @@
                         <button class="control-btn" id="speedUpBtn1" title="Increase Speed">+</button>
                         <button class="control-btn" id="swapBtn" title="Swap Videos">🔄</button>
                         <label class="file-label" id="chooseVideo1Label" for="file1">Choose Video 1</label>
-                        <input type="file" id="file1" class="file-input">
+                        <input type="file" id="file1" class="file-input" accept="video/*,.mkv">
                         <input type="file" id="subtitle1" class="file-input" accept=".srt">
                         <div class="dropdown" id="settings1">
                             <button class="control-btn dropdown-toggle" id="settingsToggle1" title="More options">⋯</button>
                             <div class="dropdown-menu">
                                 <label class="dropdown-item" for="subtitle1">Load SRT 1</label>
+                                <div class="vobsub-track-row audio-track-row" id="audioTrackRow1" hidden>
+                                    <label for="audioTrackSelect1">Embedded audio</label>
+                                    <select id="audioTrackSelect1" aria-label="Embedded audio track for video 1"></select>
+                                    <div class="vobsub-track-status audio-track-status" id="audioTrackStatus1" role="status" aria-live="polite"></div>
+                                </div>
+                                <div class="vobsub-track-row" id="vobSubTrackRow1" hidden>
+                                    <label for="vobSubTrackSelect1">Embedded VobSub</label>
+                                    <select id="vobSubTrackSelect1" aria-label="Embedded VobSub track for video 1"></select>
+                                    <div class="vobsub-track-status" id="vobSubTrackStatus1" role="status" aria-live="polite"></div>
+                                </div>
                                 <div class="dropdown-size-row" aria-label="Subtitle 1 font size">
                                     <span class="dropdown-size-label">Subtitle Size</span>
                                     <button type="button" class="dropdown-icon-btn" id="subtitleSizeDown1" title="Decrease subtitle font size">−</button>
@@ -69,9 +89,19 @@
 
     <!-- Overlay Video Player -->
     <div class="overlay-player" id="overlayPlayer">
-        <video class="video-element" id="video2" style="width: 100%; height: 100%;">
-            <source src="" type="video/mp4">
-        </video>
+        <div class="video-media-layer" id="videoMediaLayer2">
+            <video class="video-element" id="video2" style="width: 100%; height: 100%;">
+                <source src="" type="video/mp4">
+                </video>
+        </div>
+        <div class="vobsub-load-indicator" id="vobSubIndicator2" role="status" aria-live="polite" hidden>
+            <span class="vobsub-spinner" aria-hidden="true"></span>
+            <span id="vobSubIndicatorText2">Loading embedded subtitles…</span>
+        </div>
+        <div class="vobsub-load-indicator audio-load-indicator" id="audioIndicator2" role="status" aria-live="polite" hidden>
+            <span class="vobsub-spinner" aria-hidden="true"></span>
+            <span id="audioIndicatorText2">Loading embedded audio…</span>
+        </div>
         <div class="overlay-subtitle-display" id="subtitle2Display"></div>
         <div class="overlay-controls">
             <div class="overlay-progress" id="progress2">
@@ -102,6 +132,16 @@
                         <button class="overlay-btn dropdown-toggle" id="settingsToggle2" title="More options">⋯</button>
                         <div class="dropdown-menu">
                             <label class="dropdown-item" for="subtitle2">Load SRT 2</label>
+                            <div class="vobsub-track-row audio-track-row" id="audioTrackRow2" hidden>
+                                <label for="audioTrackSelect2">Embedded audio</label>
+                                <select id="audioTrackSelect2" aria-label="Embedded audio track for video 2"></select>
+                                <div class="vobsub-track-status audio-track-status" id="audioTrackStatus2" role="status" aria-live="polite"></div>
+                            </div>
+                            <div class="vobsub-track-row" id="vobSubTrackRow2" hidden>
+                                <label for="vobSubTrackSelect2">Embedded VobSub</label>
+                                <select id="vobSubTrackSelect2" aria-label="Embedded VobSub track for video 2"></select>
+                                <div class="vobsub-track-status" id="vobSubTrackStatus2" role="status" aria-live="polite"></div>
+                            </div>
                             <div class="dropdown-size-row" aria-label="Subtitle 2 font size">
                                 <span class="dropdown-size-label">Subtitle Size</span>
                                 <button type="button" class="dropdown-icon-btn" id="subtitleSizeDown2" title="Decrease subtitle font size">−</button>
@@ -114,7 +154,7 @@
                     </div>
                     <button class="overlay-btn" id="fsBtn2" title="Toggle Fullscreen" style="font-size: 10px;">&#9974;</button>
                 </div>
-                <input type="file" id="file2" class="file-input">
+                <input type="file" id="file2" class="file-input" accept="video/*,.mkv">
                 <input type="file" id="subtitle2" class="file-input" accept=".srt">
             </div>
         </div>
@@ -139,6 +179,8 @@
     </div>
 
     
+    <script type="module" src="electron/renderer/bitmap-subtitles.js"></script>
+    <script src="electron/renderer/dynamic-audio.js"></script>
     <script src="app.js"></script>
 </body>
 </html>
