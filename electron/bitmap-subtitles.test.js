@@ -145,6 +145,9 @@ test('both players expose subtitle and audio selectors with loading indicators',
     assert.match(html, new RegExp(`id="audioTrackStatus${playerNum}"`));
     assert.match(html, new RegExp(`id="audioIndicator${playerNum}"`));
     assert.match(html, new RegExp(`id="subtitle${playerNum}"[^>]+accept="[^"]*\\.ass,[^"]*\\.ssa`));
+    assert.match(html, new RegExp(`for="subtitle${playerNum}">Load SRT / ASS / SSA File<`));
+    assert.match(html, new RegExp(`type="range" id="hdrNits${playerNum}"`));
+    assert.match(html, new RegExp(`id="hdrNitsValue${playerNum}"`));
   }
   assert.match(html, /renderer\/ass-subtitles\.js/);
   assert.match(html, /renderer\/hdr-tone-mapping\.js/);

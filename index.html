@@ -59,7 +59,7 @@
                         <div class="dropdown" id="settings1">
                             <button class="control-btn dropdown-toggle" id="settingsToggle1" title="More options">⋯</button>
                             <div class="dropdown-menu">
-                                <label class="dropdown-item" for="subtitle1">Load Subtitle 1</label>
+                                <label class="dropdown-item" for="subtitle1">Load SRT / ASS / SSA File</label>
                                 <div class="vobsub-track-row audio-track-row" id="audioTrackRow1" hidden>
                                     <label for="audioTrackSelect1">Embedded audio</label>
                                     <select id="audioTrackSelect1" aria-label="Embedded audio track for video 1"></select>
@@ -82,10 +82,13 @@
                                         <input type="checkbox" id="hdrConvert1">
                                         <span>Convert HDR to SDR</span>
                                     </label>
-                                    <label class="hdr-nits-row" for="hdrNits1">
-                                        <span>SDR display nits</span>
-                                        <input type="number" id="hdrNits1" min="25" max="400" step="5" value="125">
-                                    </label>
+                                    <div class="hdr-nits-control">
+                                        <div class="hdr-nits-heading">
+                                            <label for="hdrNits1">SDR display nits</label>
+                                            <output class="hdr-nits-value" id="hdrNitsValue1" for="hdrNits1" aria-live="polite">125 nits</output>
+                                        </div>
+                                        <input class="hdr-nits-slider" type="range" id="hdrNits1" min="25" max="400" step="5" value="125" aria-label="SDR display nits">
+                                    </div>
                                     <div class="hdr-status" id="hdrStatus1" role="status" aria-live="polite">Off</div>
                                 </div>
                                 <div class="dropdown-divider electron-only" id="player2ModeDivider"></div>
@@ -143,7 +146,7 @@
                     <div class="dropdown" id="settings2">
                         <button class="overlay-btn dropdown-toggle" id="settingsToggle2" title="More options">⋯</button>
                         <div class="dropdown-menu">
-                            <label class="dropdown-item" for="subtitle2">Load Subtitle 2</label>
+                            <label class="dropdown-item" for="subtitle2">Load SRT / ASS / SSA File</label>
                             <div class="vobsub-track-row audio-track-row" id="audioTrackRow2" hidden>
                                 <label for="audioTrackSelect2">Embedded audio</label>
                                 <select id="audioTrackSelect2" aria-label="Embedded audio track for video 2"></select>
@@ -166,10 +169,13 @@
                                     <input type="checkbox" id="hdrConvert2">
                                     <span>Convert HDR to SDR</span>
                                 </label>
-                                <label class="hdr-nits-row" for="hdrNits2">
-                                    <span>SDR display nits</span>
-                                    <input type="number" id="hdrNits2" min="25" max="400" step="5" value="125">
-                                </label>
+                                <div class="hdr-nits-control">
+                                    <div class="hdr-nits-heading">
+                                        <label for="hdrNits2">SDR display nits</label>
+                                        <output class="hdr-nits-value" id="hdrNitsValue2" for="hdrNits2" aria-live="polite">125 nits</output>
+                                    </div>
+                                    <input class="hdr-nits-slider" type="range" id="hdrNits2" min="25" max="400" step="5" value="125" aria-label="SDR display nits">
+                                </div>
                                 <div class="hdr-status" id="hdrStatus2" role="status" aria-live="polite">Off</div>
                             </div>
                             <div class="dropdown-divider electron-only" id="player2ModeDivider2"></div>

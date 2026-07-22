@@ -442,12 +442,17 @@ void main() {
       for (const playerNumber of [1, 2]) {
         const toggle = document.getElementById(`hdrConvert${playerNumber}`);
         const input = document.getElementById(`hdrNits${playerNumber}`);
+        const output = document.getElementById(`hdrNitsValue${playerNumber}`);
         const status = document.getElementById(`hdrStatus${playerNumber}`);
         if (toggle) toggle.checked = this.enabled;
         if (input) {
           input.value = String(this.displayNits);
           input.disabled = !this.enabled;
+          input.setAttribute('aria-valuetext', `${this.displayNits} nits`);
+          const progress = ((this.displayNits - MIN_NITS) / (MAX_NITS - MIN_NITS)) * 100;
+          input.style.setProperty('--hdr-nits-progress', `${progress}%`);
         }
+        if (output) output.textContent = `${this.displayNits} nits`;
         if (!status) continue;
         const renderer = this.renderers.find((candidate) => candidate.playerNumber === playerNumber);
         if (!this.enabled) status.textContent = 'Off';
