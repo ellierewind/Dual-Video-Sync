@@ -35,6 +35,7 @@ A local dual-video player that can run in a browser (`index.html`) or as an Elec
 -   **Full ASS/SSA rendering** through JASSUB's WebAssembly/WebGL port of `libass`, preserving authored styles, positioning, animation, karaoke, drawings, and MKV font attachments without burning subtitles into the video.
 -   Standalone `.ass` and `.ssa` files use the same libass renderer and remain available across relaunches, player swaps, and Player 2 pop-out/docking.
 -   **Cached AC-3/DTS-family audio** using the bundled FFmpeg decoder. Audio selection, pause, seeking, speed, volume, mute, swapping, and popped-out Player 2 remain tied to the original video timeline.
+-   **Experimental GPU HDR-to-SDR tone mapping** using WebGL on the original Chromium video frames, with automatic HDR detection, MPC Video Renderer's PQ/Hable conversion sequence, BT.2020-to-BT.709 conversion, dithering, and an adjustable `25-400` nit SDR target.
 -   **Last-loaded video persistence** per player across app restarts.
 -   **Windows `.exe` packaging** via the `electron/` project.
 
@@ -87,3 +88,11 @@ A local dual-video player that can run in a browser (`index.html`) or as an Elec
 -   Playback uses the converted audio after the complete selected track is ready. The video itself is never processed and no full-video proxy is created.
 -   Each player's settings menu lists every embedded audio track plus the original/default Chromium path. AC-3, E-AC-3, DTS, DTS-HD, and TrueHD tracks use dynamic decoding by default when selected.
 -   The selected audio track is remembered per player/video. Converted WAV files are cached and reused; seeking uses the same finite file immediately and follows playback rate, volume, and mute state without restarting FFmpeg.
+
+## HDR-to-SDR notes
+
+-   Enable `Convert HDR to SDR` in either player's settings menu and set the SDR display brightness in nits. The setting applies to both players so their presentation path remains matched.
+-   Chromium remains responsible for decoding, playback, seeking, audio, and the media clocks. WebGL uploads the exact currently presented video frame with browser color conversion disabled; it never creates a proxy or re-encodes the video.
+-   SDR and non-PQ HDR sources stay on Chromium's native video path. HDR metadata comes from the existing `ffprobe` inspection; the custom nits-based shader currently applies to HDR10/PQ sources.
+-   Chromium exposes the uploaded frame to WebGL as an 8-bit RGB texture. Tone mapping is real, but this prototype cannot provide a fully 10-bit pipeline and may show more banding than a native renderer such as libplacebo.
+-   Run `window.hdrToneMapping.getMetrics()` in DevTools to inspect rendered frames, callback gaps/lateness, Chromium dropped frames, canvas resolution, and whether the frame path is zero-copy.

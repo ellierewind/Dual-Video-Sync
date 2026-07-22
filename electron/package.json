@@ -65,6 +65,10 @@
         "to": "web/electron/renderer/dynamic-audio.js"
       },
       {
+        "from": "renderer/hdr-tone-mapping.js",
+        "to": "web/electron/renderer/hdr-tone-mapping.js"
+      },
+      {
         "from": "../icons",
         "to": "web/icons"
       }

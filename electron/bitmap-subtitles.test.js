@@ -9,6 +9,7 @@ const {
   buildSubtitleExtractionArgs,
   chooseAudioTrack,
   chooseVobSubTrack,
+  describeVideoColor,
   listAudioTracks,
   listEmbeddedSubtitleTracks,
   listFontAttachments,
@@ -25,6 +26,21 @@ test('parseFrameRate handles rational rates', () => {
   assert.equal(parseFrameRate('24000/1001'), 24000 / 1001);
   assert.equal(parseFrameRate('30/1'), 30);
   assert.equal(parseFrameRate('0/0'), null);
+});
+
+test('video color metadata identifies PQ and HLG HDR without flagging SDR', () => {
+  assert.equal(describeVideoColor({
+    codec_type: 'video', color_transfer: 'smpte2084', color_primaries: 'bt2020',
+    color_space: 'bt2020nc', pix_fmt: 'yuv420p10le'
+  }).isHdr, true);
+  assert.equal(describeVideoColor({
+    codec_type: 'video', color_transfer: 'arib-std-b67', color_primaries: 'bt2020',
+    color_space: 'bt2020nc', bits_per_raw_sample: '10'
+  }).isHdr, true);
+  assert.equal(describeVideoColor({
+    codec_type: 'video', color_transfer: 'bt709', color_primaries: 'bt709',
+    color_space: 'bt709', pix_fmt: 'yuv420p'
+  }).isHdr, false);
 });
 
 test('VobSub discovery ignores video, audio, and text subtitle streams', () => {
@@ -131,6 +147,16 @@ test('both players expose subtitle and audio selectors with loading indicators',
     assert.match(html, new RegExp(`id="subtitle${playerNum}"[^>]+accept="[^"]*\\.ass,[^"]*\\.ssa`));
   }
   assert.match(html, /renderer\/ass-subtitles\.js/);
+  assert.match(html, /renderer\/hdr-tone-mapping\.js/);
+});
+
+test('HDR renderer uploads Chromium video frames to WebGL without browser color conversion', () => {
+  const source = fs.readFileSync(path.join(__dirname, 'renderer', 'hdr-tone-mapping.js'), 'utf8');
+  assert.match(source, /requestVideoFrameCallback/);
+  assert.match(source, /UNPACK_COLORSPACE_CONVERSION_WEBGL/);
+  assert.match(source, /texImage2D/);
+  assert.match(source, /st2084ToLinear/);
+  assert.doesNotMatch(source, /drawImage\s*\(/);
 });
 
 test('subtitle extraction copies only the selected subtitle stream', () => {

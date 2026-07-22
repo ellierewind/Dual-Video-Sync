@@ -84,6 +84,7 @@ async function resolveVideoFile(filePath, options = {}) {
     return {
       ...selected,
       ...(Number.isFinite(inspected.frameRate) ? { frameRate: inspected.frameRate } : {}),
+      videoColor: inspected.videoColor,
       vobSubTracks: inspected.vobSubTracks,
       selectedVobSubTrack: inspected.selectedVobSubTrack,
       audioTracks: inspected.audioTracks,

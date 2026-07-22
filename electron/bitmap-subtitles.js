@@ -182,6 +182,31 @@ function chooseAudioTrack(tracks) {
     || null;
 }
 
+function describeVideoColor(stream) {
+  if (!stream || stream.codec_type !== 'video') return null;
+  const transfer = String(stream.color_transfer || '').trim().toLowerCase();
+  const primaries = String(stream.color_primaries || '').trim().toLowerCase();
+  const matrix = String(stream.color_space || '').trim().toLowerCase();
+  const pixelFormat = String(stream.pix_fmt || '').trim().toLowerCase();
+  const bitsPerRawSample = Number(stream.bits_per_raw_sample);
+  const pixelFormatDepth = Number(pixelFormat.match(/(?:p|yuv\d{3}p)(\d{2})(?:le|be)?$/)?.[1]);
+  const bitDepth = Number.isFinite(bitsPerRawSample) && bitsPerRawSample > 0
+    ? bitsPerRawSample
+    : (Number.isFinite(pixelFormatDepth) ? pixelFormatDepth : (pixelFormat.includes('10') ? 10 : 8));
+  const isPq = transfer === 'smpte2084';
+  const isHlg = transfer === 'arib-std-b67';
+  const isWideGamutHighBitDepth = bitDepth > 8 && (primaries === 'bt2020' || matrix.startsWith('bt2020'));
+
+  return {
+    transfer,
+    primaries,
+    matrix,
+    pixelFormat,
+    bitDepth,
+    isHdr: isPq || isHlg || isWideGamutHighBitDepth
+  };
+}
+
 function needsDynamicAudio(track) {
   return !!track && DYNAMIC_AUDIO_CODEC_NAMES.has(String(track.codec || '').trim().toLowerCase());
 }
@@ -260,6 +285,7 @@ class BitmapSubtitleService {
     const preferredAudioTrack = chooseAudioTrack(audioTracks);
     return {
       ...(frameRate ? { frameRate } : {}),
+      videoColor: describeVideoColor(video),
       vobSubTracks,
       selectedVobSubTrack: chooseEmbeddedSubtitleTrack(vobSubTracks),
       fontAttachments,
@@ -377,6 +403,7 @@ module.exports = {
   chooseAudioTrack,
   chooseEmbeddedSubtitleTrack,
   chooseVobSubTrack,
+  describeVideoColor,
   listAudioTracks,
   listEmbeddedSubtitleTracks,
   listFontAttachments,

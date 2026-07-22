@@ -2909,6 +2909,7 @@ async function openSubtitleFromDialog(playerNum) {
 
 function applyVideoMetadata(playerId, metadata, options = {}) {
     const playerNum = getPlayerNumFromPlayerId(playerId);
+    window.hdrToneMapping?.setVideoMetadata(playerNum, metadata?.videoColor || null);
     if (metadata && Number.isFinite(Number(metadata.frameRate)) && Number(metadata.frameRate) > 0) {
         setFrameRateForPlayer(playerNum, metadata.frameRate);
         return true;
@@ -3828,6 +3829,7 @@ function swapVideos() {
     // Swap video sources
     video1.src = video2Src;
     video2.src = video1Src;
+    window.hdrToneMapping?.swapVideoMetadata();
     disposeVobSubRenderer(1);
     disposeVobSubRenderer(2);
     lastVideoPath1 = tempPath2;

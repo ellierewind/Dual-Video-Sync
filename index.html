@@ -76,6 +76,18 @@
                                     <span class="dropdown-size-value" id="subtitleSizeValue1">100%</span>
                                     <button type="button" class="dropdown-icon-btn" id="subtitleSizeUp1" title="Increase subtitle font size">+</button>
                                 </div>
+                                <div class="dropdown-divider"></div>
+                                <div class="hdr-settings" data-hdr-settings="1">
+                                    <label class="hdr-toggle-row" for="hdrConvert1">
+                                        <input type="checkbox" id="hdrConvert1">
+                                        <span>Convert HDR to SDR</span>
+                                    </label>
+                                    <label class="hdr-nits-row" for="hdrNits1">
+                                        <span>SDR display nits</span>
+                                        <input type="number" id="hdrNits1" min="25" max="400" step="5" value="125">
+                                    </label>
+                                    <div class="hdr-status" id="hdrStatus1" role="status" aria-live="polite">Off</div>
+                                </div>
                                 <div class="dropdown-divider electron-only" id="player2ModeDivider"></div>
                                 <button type="button" class="dropdown-item electron-only" id="player2ModeToggle">Pop Out Player 2</button>
                         </div>
@@ -148,6 +160,18 @@
                                 <span class="dropdown-size-value" id="subtitleSizeValue2">100%</span>
                                 <button type="button" class="dropdown-icon-btn" id="subtitleSizeUp2" title="Increase subtitle font size">+</button>
                             </div>
+                            <div class="dropdown-divider"></div>
+                            <div class="hdr-settings" data-hdr-settings="2">
+                                <label class="hdr-toggle-row" for="hdrConvert2">
+                                    <input type="checkbox" id="hdrConvert2">
+                                    <span>Convert HDR to SDR</span>
+                                </label>
+                                <label class="hdr-nits-row" for="hdrNits2">
+                                    <span>SDR display nits</span>
+                                    <input type="number" id="hdrNits2" min="25" max="400" step="5" value="125">
+                                </label>
+                                <div class="hdr-status" id="hdrStatus2" role="status" aria-live="polite">Off</div>
+                            </div>
                             <div class="dropdown-divider electron-only" id="player2ModeDivider2"></div>
                             <button type="button" class="dropdown-item electron-only" id="player2ModeToggle2">Pop Out Player 2</button>
                         </div>
@@ -182,6 +206,7 @@
     <script type="module" src="electron/renderer/bitmap-subtitles.js"></script>
     <script type="module" src="electron/renderer/ass-subtitles.js"></script>
     <script src="electron/renderer/dynamic-audio.js"></script>
+    <script src="electron/renderer/hdr-tone-mapping.js"></script>
     <script src="app.js"></script>
 </body>
 </html>
