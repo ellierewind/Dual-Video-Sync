@@ -6,8 +6,9 @@ const { spawn } = require('child_process');
 const ffmpegStaticPath = require('ffmpeg-static');
 const ffprobeStaticPath = require('@derhuerst/ffprobe-static');
 
-const SUBTITLE_CACHE_VERSION = 2;
+const SUBTITLE_CACHE_VERSION = 3;
 const VOBSUB_CODEC_NAMES = new Set(['dvd_subtitle', 'vobsub']);
+const PGS_CODEC_NAMES = new Set(['hdmv_pgs_subtitle', 'pgs']);
 const ASS_CODEC_NAMES = new Set(['ass', 'ssa']);
 const FONT_ATTACHMENT_CODECS = new Set(['ttf', 'otf', 'woff', 'woff2']);
 const FONT_ATTACHMENT_EXTENSIONS = new Set(['.ttf', '.otf', '.ttc', '.otc', '.woff', '.woff2']);
@@ -78,9 +79,24 @@ function describeAssTrack(stream) {
   };
 }
 
+function describePgsTrack(stream) {
+  if (!stream || stream.codec_type !== 'subtitle' || !PGS_CODEC_NAMES.has(stream.codec_name)) return null;
+  return {
+    streamIndex: Number(stream.index),
+    codec: stream.codec_name,
+    renderer: 'bitmap',
+    bitmapFormat: 'pgs',
+    language: stream.tags?.language || 'und',
+    title: stream.tags?.title || '',
+    forced: Number(stream.disposition?.forced) === 1,
+    default: Number(stream.disposition?.default) === 1
+  };
+}
+
 function describeEmbeddedSubtitleTrack(stream) {
   const vobSub = describeVobSubTrack(stream);
-  return vobSub ? { ...vobSub, renderer: 'bitmap' } : describeAssTrack(stream);
+  return vobSub ? { ...vobSub, renderer: 'bitmap', bitmapFormat: 'vobsub' }
+    : (describePgsTrack(stream) || describeAssTrack(stream));
 }
 
 function listVobSubTracks(streams) {
@@ -237,6 +253,19 @@ function buildAssExtractionArgs(inputPath, outputPath, streamIndex) {
   ];
 }
 
+function buildPgsExtractionArgs(inputPath, outputPath, streamIndex) {
+  return [
+    '-hide_banner',
+    '-y',
+    '-i', inputPath,
+    '-map', `0:${streamIndex}`,
+    '-c:s', 'copy',
+    '-map_metadata', '-1',
+    '-f', 'sup',
+    outputPath
+  ];
+}
+
 function buildAttachmentExtractionArgs(inputPath, outputPath, attachmentIndex) {
   return [
     '-hide_banner',
@@ -313,7 +342,8 @@ class BitmapSubtitleService {
     })).digest('hex').slice(0, 24);
     const cacheDir = path.join(this.app.getPath('userData'), 'subtitle-cache');
     const isAss = track.renderer === 'ass';
-    const extension = isAss ? '.ass' : '.mks';
+    const isPgs = track.bitmapFormat === 'pgs';
+    const extension = isAss ? '.ass' : (isPgs ? '.sup' : '.mks');
     const outputPath = path.join(cacheDir, `${cacheKey}${extension}`);
     const partialPath = path.join(cacheDir, `${cacheKey}.partial${extension}`);
 
@@ -337,7 +367,7 @@ class BitmapSubtitleService {
 
     const content = await fs.promises.readFile(outputPath);
     const arrayBuffer = content.buffer.slice(content.byteOffset, content.byteOffset + content.byteLength);
-    return { track, fileName: `${cacheKey}.mks`, content: arrayBuffer, fonts: [] };
+    return { track, fileName: `${cacheKey}${extension}`, content: arrayBuffer, fonts: [] };
   }
 
   async extractTrack(inputPath, track, partialPath, outputPath) {
@@ -345,7 +375,9 @@ class BitmapSubtitleService {
     try {
       const args = track.renderer === 'ass'
         ? buildAssExtractionArgs(inputPath, partialPath, track.streamIndex)
-        : buildSubtitleExtractionArgs(inputPath, partialPath, track.streamIndex);
+        : (track.bitmapFormat === 'pgs'
+          ? buildPgsExtractionArgs(inputPath, partialPath, track.streamIndex)
+          : buildSubtitleExtractionArgs(inputPath, partialPath, track.streamIndex));
       await runProcess(this.ffmpegPath, args);
       await fs.promises.rename(partialPath, outputPath);
     } catch (error) {
@@ -399,6 +431,7 @@ module.exports = {
   BitmapSubtitleService,
   buildAssExtractionArgs,
   buildAttachmentExtractionArgs,
+  buildPgsExtractionArgs,
   buildSubtitleExtractionArgs,
   chooseAudioTrack,
   chooseEmbeddedSubtitleTrack,

@@ -6,6 +6,7 @@ const path = require('node:path');
 const {
   buildAssExtractionArgs,
   buildAttachmentExtractionArgs,
+  buildPgsExtractionArgs,
   buildSubtitleExtractionArgs,
   chooseAudioTrack,
   chooseVobSubTrack,
@@ -54,16 +55,17 @@ test('VobSub discovery ignores video, audio, and text subtitle streams', () => {
   assert.equal(tracks[0].language, 'eng');
 });
 
-test('embedded subtitle discovery includes ASS, SSA, and VobSub without plain text tracks', () => {
+test('embedded subtitle discovery includes ASS, SSA, PGS, and VobSub without plain text tracks', () => {
   const tracks = listEmbeddedSubtitleTracks([
     stream(0, 'video', 'h264'),
     stream(1, 'subtitle', 'subrip'),
     { ...stream(2, 'subtitle', 'ass'), tags: { language: 'eng' } },
     { ...stream(3, 'subtitle', 'ssa'), tags: { language: 'jpn' } },
-    stream(4, 'subtitle', 'dvd_subtitle')
+    stream(4, 'subtitle', 'dvd_subtitle'),
+    { ...stream(5, 'subtitle', 'hdmv_pgs_subtitle'), tags: { language: 'fra' } }
   ]);
-  assert.deepEqual(tracks.map((track) => [track.streamIndex, track.renderer]), [
-    [2, 'ass'], [3, 'ass'], [4, 'bitmap']
+  assert.deepEqual(tracks.map((track) => [track.streamIndex, track.renderer, track.bitmapFormat || null]), [
+    [2, 'ass', null], [3, 'ass', null], [4, 'bitmap', 'vobsub'], [5, 'bitmap', 'pgs']
   ]);
 });
 
@@ -177,6 +179,15 @@ test('ASS extraction preserves the selected script without touching audio or vid
   assert.match(joined, /-map 0:7/);
   assert.match(joined, /-c:s copy/);
   assert.match(joined, /-f ass/);
+  assert.doesNotMatch(joined, /-c:v|-c:a|overlay|libx264/);
+});
+
+test('PGS extraction copies only the selected stream to a raw SUP file', () => {
+  const args = buildPgsExtractionArgs('movie.mkv', 'track.sup', 8);
+  const joined = args.join(' ');
+  assert.match(joined, /-map 0:8/);
+  assert.match(joined, /-c:s copy/);
+  assert.match(joined, /-f sup/);
   assert.doesNotMatch(joined, /-c:v|-c:a|overlay|libx264/);
 });
 

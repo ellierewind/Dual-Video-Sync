@@ -20,6 +20,7 @@
       "!dist*/**",
       "!*.test.js",
       "!*.smoke.js",
+      "!test-fixtures/**",
       "!*smoke-user-data/**",
       "!node_modules/.cache/**"
     ],

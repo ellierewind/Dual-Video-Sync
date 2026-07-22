@@ -2497,7 +2497,7 @@ function formatVobSubTrackLabel(track, index) {
     const details = title && title.toLowerCase() !== language.toLowerCase() ? `${language} — ${title}` : (title || language);
     const format = track.renderer === 'ass'
         ? (String(track.codec).toLowerCase() === 'ssa' ? 'SSA' : 'ASS')
-        : 'VobSub';
+        : (track.bitmapFormat === 'pgs' || String(track.codec).toLowerCase() === 'hdmv_pgs_subtitle' ? 'PGS' : 'VobSub');
     return `${index + 1}. ${details} · ${format}${flags.length ? ` (${flags.join(', ')})` : ''}`;
 }
 
@@ -2730,11 +2730,13 @@ async function loadVobSubRenderer(playerNum, track, filePath) {
             throw new Error('The extracted embedded subtitle track was empty.');
         }
         const videoElement = playerNum === 1 ? video1 : video2;
+        const bitmapSmokeDebug = !isAss && new URLSearchParams(window.location.search).has('vobsub-smoke');
         const renderer = moduleApi.createRenderer({
             video: videoElement,
             subContent,
-            fileName: payload.fileName || (isAss ? 'track.ass' : 'track.mks'),
+            fileName: payload.fileName || (isAss ? 'track.ass' : (track.bitmapFormat === 'pgs' ? 'track.sup' : 'track.mks')),
             fonts: Array.isArray(payload?.fonts) ? payload.fonts : [],
+            debug: bitmapSmokeDebug,
             cacheLimit: 48,
             prefetchWindow: { before: 1, after: 2 },
             displaySettings: {
@@ -2748,7 +2750,8 @@ async function loadVobSubRenderer(playerNum, track, filePath) {
                     syncVobSubRendererTransform(playerNum);
                     const language = track.language && track.language !== 'und' ? ` (${track.language})` : '';
                     setVobSubLoadStatus(playerNum, 'ready', `Ready: ${trackLabel}`);
-                    showControlNotification(`${isAss ? 'ASS' : 'VobSub'}${language} ready`);
+                    const rendererName = isAss ? 'ASS' : (track.bitmapFormat === 'pgs' ? 'PGS' : 'VobSub');
+                    showControlNotification(`${rendererName}${language} ready`);
                 } else if (event.type === 'error') {
                     console.error('Embedded subtitle renderer error:', event.error);
                     setVobSubLoadStatus(playerNum, 'error', `Could not load ${trackLabel}`);
